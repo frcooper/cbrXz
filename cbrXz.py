@@ -75,6 +75,9 @@ def main():
       log("ERROR: {} is not the child of {}".format(source, root))
       exit()
 
+  log("beginning - {} books of {} files.".format(book_count, total))
+  log("----")
+
   books.sort()
   for book in books:
     log("EVENT: processing {}".format(book))
@@ -102,30 +105,43 @@ def main():
         if not args.dryrun:
           if os.path.isfile(book_destination_f):
             os.unlink(book_destination_f)
-          shutil.copy2(book, book_destination)
+          shutil.copyfile(book, book_destination_f)
         log("----")
       continue
 
     if book_t in ['.cbr', '.rar']:
       book_z = "{}.cbz".format(book_b)
       # log("          book_z: {}".format(book_z))
+      f_book_z = os.path.join(book_destination, book_z)
+      # log("        f_book_z: {}".format(f_book_z))
       if not os.path.isfile(os.path.join(book_destination, book_z)) or args.replace:
         with tempfile.TemporaryDirectory() as tmp_x_dir:
           # log("       tmp_x_dir: {}".format(tmp_x_dir))
-          with rarfile.RarFile(book) as rar:
-            log("EVENT: extracting {} to {}".format(book_f, tmp_x_dir))
-            try:
-              rar.extractall(tmp_x_dir)
-            except rarfile.RarCRCError:
-              log("ERROR: corrupted archive: {}".format(book_f))
-              log("----")
-              continue
+          try:
+            with rarfile.RarFile(book) as rar:
+              log("EVENT: extracting {} to {}".format(book_f, tmp_x_dir))
+              try:
+                rar.extractall(tmp_x_dir)
+              except rarfile.RarWarning:
+                log("WARNING: Non-fatal error handling {} - some data loss likely.".format(book_f))
+              except rarfile.RarCRCError:
+                log("ERROR: corrupted archive: {}".format(book_f))
+                log("----")
+                continue
+          except rarfile.NotRarFile:
+            log("WARNING: Non-fatal error handling {} - actually a Zip.".format(book_f))
+            if not os.path.isfile(f_book_z) or args.replace:
+              log("EVENT: copying {} to {}".format(book_f, f_book_z))
+              if not args.dryrun:
+                if os.path.isfile(f_book_z):
+                  os.unlink(f_book_z)
+                shutil.copyfile(book, f_book_z)
+            log("----")
+            continue
           with tempfile.TemporaryDirectory() as tmp_b_dir:
             # log("       tmp_b_dir: {}".format(tmp_b_dir))
             t_book_z = os.path.join(tmp_b_dir, book_z)
             # log("        t_book_z: {}".format(t_book_z))
-            f_book_z = os.path.join(book_destination, book_z)
-            # log("        f_book_z: {}".format(f_book_z))
             with zipfile.ZipFile(t_book_z, 'w') as zip:
               pages = []
               for xt_p, xt_fls, xt_fis in os.walk(tmp_x_dir):                                              # pylint: disable=W0612
@@ -143,7 +159,7 @@ def main():
               if not args.dryrun:
                 if os.path.isfile(f_book_z):
                   os.unlink(f_book_z)
-                shutil.copy(t_book_z, book_destination)
+                shutil.copyfile(t_book_z, f_book_z)
     log("----")
 
   log("completed - {} books of {} files.".format(book_count, total))
