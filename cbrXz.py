@@ -8,7 +8,7 @@ import shutil
 import tempfile
 import zipfile
 
-BOOK_TYPES = ['.cbr', '.rar', '.cbz', '.zip', '.cb7', '.7z']
+BOOK_TYPES = ['.cbr', '.rar', '.cbz', '.zip', '.cb7', '.7z', '.pdf', '.epub']
 
 def filterBook(s):
   v = False
@@ -106,7 +106,7 @@ def main():
           if os.path.isfile(book_destination_f):
             os.unlink(book_destination_f)
           shutil.copyfile(book, book_destination_f)
-        log("----")
+      log("----")
       continue
 
     if book_t in ['.cbr', '.rar']:
@@ -122,8 +122,9 @@ def main():
               log("EVENT: extracting {} to {}".format(book_f, tmp_x_dir))
               try:
                 rar.extractall(tmp_x_dir)
-              except rarfile.RarWarning:
+              except rarfile.RarWarning as warning:
                 log("WARNING: Non-fatal error handling {} - some data loss likely.".format(book_f))
+                debug(warning)
               except rarfile.RarCRCError:
                 log("ERROR: corrupted archive: {}".format(book_f))
                 log("----")
