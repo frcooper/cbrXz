@@ -129,6 +129,10 @@ def main():
                 log("ERROR: corrupted archive: {}".format(book_f))
                 log("----")
                 continue
+              except rarfile.BadRarFile:
+                log("ERROR: corrupted archive: {}".format(book_f))
+                log("----")
+                continue
           except rarfile.NotRarFile:
             log("WARNING: Non-fatal error handling {} - actually a Zip.".format(book_f))
             if not os.path.isfile(f_book_z) or args.replace:
