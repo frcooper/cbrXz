@@ -32,10 +32,10 @@ def isZip(file_path):
     return file_header == zip_magic_number
 
 def filterBook(s):
-    return True
+    return False
 
 def filterPage(s):
-    return True
+    return False
 
 
 def debug(s):
@@ -83,16 +83,23 @@ def main():
                 total += 1
 
                 f_ext = os.path.splitext(f)[1]
+                logger.debug("f_ext = {}".format(f_ext))
                 if f_ext in BOOK_TYPES:
+                    logger.debug("valid type")
                     if args.raronly:
+                        logger.debug("raronly active")
                         if not f_ext in ['.cbr', '.rar']:
+                            logger.debug("not a rar - next pls")
                             continue
                     if filterBook(f):
+                        logger.debug("filtered - next pls")
                         continue
+                    logger.debug("good book - adding to array")
                     books.append(os.path.join(path, f))
                     book_count += 1
+                    logger.debug("books[] = ".format(books))
                 else:
-                    logger.warning("{} is not a supported filetype.".format(os.path.join(path, f)))
+                    logger.info("{} is not a supported filetype.".format(os.path.join(path, f)))
 
     if args.root is not None:
         root = os.path.abspath(args.root)
@@ -223,3 +230,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
