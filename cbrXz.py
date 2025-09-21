@@ -11,11 +11,7 @@ import zipfile
 
 
 
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s:%(funcName)s:%(levelname)s - %(message)s'
-)
-
+# moved logging configuration into main; keep module-level logger
 logger = logging.getLogger(__name__)
 
 BOOK_TYPES = ['.cbr', '.rar', '.cbz', '.zip', '.cb7', '.7z', '.pdf', '.epub']
@@ -63,11 +59,30 @@ def main():
     parser.add_argument('-R', '--rar-only', dest='raronly', required=False, action='store_true')
     parser.add_argument('-F', '--replace', dest='replace', required=False, action='store_true')
     parser.add_argument('-N', '--dry-run', dest='dryrun', required=False, action='store_true')
+    parser.add_argument('--log-level', default='INFO', choices=['CRITICAL','ERROR','WARNING','INFO','DEBUG','NOTSET'])
     args = parser.parse_args()
 
-    source = os.path.abspath(args.src)
+    # configure logging now that args are known
+    log_level = getattr(logging, args.log_level.upper(), logging.INFO)
+    logging.basicConfig(
+        level=log_level,
+        format='%(asctime)s - %(name)s:%(funcName)s:%(levelname)s - %(message)s'
+    )
 
+    source = os.path.abspath(args.src)
     destination = os.path.abspath(args.dst)
+
+    # early input validation (no logging)
+    if not os.path.exists(source):
+        parser.error(f"Source not found: {source}")
+    if not (os.path.isdir(source) or os.path.isfile(source)):
+        parser.error(f"Source must be a file or directory: {source}")
+    if os.path.isfile(destination):
+        parser.error(f"Destination must be a directory (not a file): {destination}")
+    try:
+        os.makedirs(destination, exist_ok=True)
+    except Exception as e:  # pylint: disable=broad-except
+        parser.error(f"Cannot create destination directory: {destination} ({e})")
 
     logger.debug("source: %s", source)
     logger.debug("destination: %s", destination)
@@ -107,12 +122,11 @@ def main():
             if os.path.commonpath([source, root]) == root:
                 source = root
             else:
-                logger.error("ERROR: %s is not the child of %s", source, root)
-                exit()
+                # was logger.error + exit; use argparse error for clean early exit
+                parser.error(f"{source} is not the child of {root}")
         except ValueError:
             # Different drives on Windows can raise ValueError in commonpath
-            logger.error("ERROR: %s and %s are on different drives", source, root)
-            exit()
+            parser.error(f"{source} and {root} are on different drives")
 
     # Determine base for relative paths (handles file vs dir sources)
     rel_base = source if os.path.isdir(source) else os.path.dirname(source)
@@ -152,7 +166,7 @@ def main():
                         logger.info("EVENT: %s already exists - removing...", book_destination_f)
                         # os.unlink(book_destination_f)
                         pass
-                    shutil.copyfile(book, book_destination_f)
+                    shutil.copy2(book, book_destination_f)
             logger.debug("----")
             continue
 
@@ -161,7 +175,7 @@ def main():
             logger.debug("          book_z: %s", book_z)
             f_book_z = os.path.join(book_destination, book_z)
             logger.debug("        f_book_z: %s", f_book_z)
-            if not os.path.isfile(os.path.join(book_destination, book_z)) or args.replace:
+            if not os.path.isfile(f_book_z) or args.replace:
                 with tempfile.TemporaryDirectory() as tmp_x_dir:
                     logger.debug("       tmp_x_dir: %s", tmp_x_dir)
                     try:
@@ -188,7 +202,7 @@ def main():
                                 if os.path.isfile(f_book_z):
                                     # os.unlink(f_book_z)
                                     pass
-                                shutil.copyfile(book, f_book_z)
+                                shutil.copy2(book, f_book_z)
                         logger.debug("----")
                         continue
                     except rarfile.RarCRCError:
@@ -228,7 +242,7 @@ def main():
                                 if os.path.isfile(f_book_z):
                                     # os.unlink(f_book_z)
                                     pass
-                                shutil.copyfile(t_book_z, f_book_z)
+                                shutil.copy2(t_book_z, f_book_z)
         logger.debug("----")
 
     logger.info("completed - %d books of %d files.", book_count, total)
