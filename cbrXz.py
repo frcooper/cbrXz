@@ -69,8 +69,8 @@ def main():
 
     destination = os.path.abspath(args.dst)
 
-    logger.debug("source: {}".format(source))
-    logger.debug("destination: {}".format(destination))
+    logger.debug("source: %s", source)
+    logger.debug("destination: %s", destination)
 
     if os.path.isfile(source) == True:
         # single file mode is a cheat 
@@ -83,7 +83,7 @@ def main():
                 total += 1
 
                 f_ext = os.path.splitext(f)[1].lower()
-                logger.debug("f_ext = {}".format(f_ext))
+                logger.debug("f_ext = %s", f_ext)
                 if f_ext in BOOK_TYPES:
                     logger.debug("valid type")
                     if args.raronly:
@@ -97,51 +97,51 @@ def main():
                     logger.debug("good book - adding to array")
                     books.append(os.path.join(path, f))
                     book_count += 1
-                    logger.debug("books[] = ".format(books))
+                    logger.debug("books[] = %s", books)
                 else:
-                    logger.info("{} is not a supported filetype.".format(os.path.join(path, f)))
+                    logger.info("%s is not a supported filetype.", os.path.join(path, f))
 
     if args.root is not None:
         root = os.path.abspath(args.root)
         if source.startswith(root):
             source = root
         else:
-            logger.error("ERROR: {} is not the child of {}".format(source, root))
+            logger.error("ERROR: %s is not the child of %s", source, root)
             exit()
 
-    logger.info("beginning - {} books of {} files.".format(book_count, total))
+    logger.info("beginning - %d books of %d files.", book_count, total)
     logger.debug("----")
 
     # exit()
 
     books.sort()
     for book in books:
-        logger.info("EVENT: processing {}".format(book))
-        logger.debug("            book: {}".format(book))
+        logger.info("EVENT: processing %s", book)
+        logger.debug("            book: %s", book)
         t_book = book[len(source) + 1:]
-        logger.debug("          t_book: {}".format(t_book))
+        logger.debug("          t_book: %s", t_book)
         book_p, book_f = os.path.split(t_book)
-        logger.debug("          book_p: {}".format(book_p))
-        logger.debug("          book_f: {}".format(book_f))
+        logger.debug("          book_p: %s", book_p)
+        logger.debug("          book_f: %s", book_f)
         book_b, book_t = os.path.splitext(book_f)
-        logger.debug("          book_b: {}".format(book_b))
+        logger.debug("          book_b: %s", book_b)
         book_t = book_t.lower()
-        logger.debug("          book_t: {}".format(book_t))
+        logger.debug("          book_t: %s", book_t)
         book_destination = os.path.join(destination, book_p)
-        logger.debug("book_destination: {}".format(book_destination))
+        logger.debug("book_destination: %s", book_destination)
 
         if not os.path.exists(book_destination):
-            logger.info("EVENT: making {}".format(book_destination))
+            logger.info("EVENT: making %s", book_destination)
             if not args.dryrun:
                 os.makedirs(book_destination)
 
         if not book_t in ['.cbr', '.rar']:
             book_destination_f = os.path.join(book_destination, book_f)
             if not os.path.isfile(book_destination_f) or args.replace:
-                logger.info("EVENT: copying {} to {}".format(book_f, book_destination))
+                logger.info("EVENT: copying %s to %s", book_f, book_destination)
                 if not args.dryrun:
                     if os.path.isfile(book_destination_f):
-                        logger.info("EVENT: {} already exists - removing...".format(book_destination_f))
+                        logger.info("EVENT: %s already exists - removing...", book_destination_f)
                         # os.unlink(book_destination_f)
                         pass
                     shutil.copyfile(book, book_destination_f)
@@ -150,32 +150,32 @@ def main():
 
         if book_t in ['.cbr', '.rar']:
             book_z = "{}.cbz".format(book_b)
-            logger.debug("          book_z: {}".format(book_z))
+            logger.debug("          book_z: %s", book_z)
             f_book_z = os.path.join(book_destination, book_z)
-            logger.debug("        f_book_z: {}".format(f_book_z))
+            logger.debug("        f_book_z: %s", f_book_z)
             if not os.path.isfile(os.path.join(book_destination, book_z)) or args.replace:
                 with tempfile.TemporaryDirectory() as tmp_x_dir:
-                    logger.debug("       tmp_x_dir: {}".format(tmp_x_dir))
+                    logger.debug("       tmp_x_dir: %s", tmp_x_dir)
                     try:
                         with rarfile.RarFile(book) as rar:
-                            logger.info("EVENT: extracting {} to {}".format(book_f, tmp_x_dir))
+                            logger.info("EVENT: extracting %s to %s", book_f, tmp_x_dir)
                             try:
                                 rar.extractall(tmp_x_dir)
                             except rarfile.RarWarning as warning:
-                                logger.warn("WARNING: Non-fatal error handling {} - some data loss likely.".format(book_f))
-                                logger.debug(debug(warning))
+                                logger.warning("Non-fatal error handling %s - some data loss likely.", book_f)
+                                logger.debug("rarfile warning: %s", warning)
                             except rarfile.RarCRCError:
-                                logger.error("ERROR: corrupted archive: {}".format(book_f))
+                                logger.error("ERROR: corrupted archive: %s", book_f)
                                 logger.debug("----")
                                 continue
                             except rarfile.BadRarFile:
-                                logger.error("ERROR: corrupted archive: {}".format(book_f))
+                                logger.error("ERROR: corrupted archive: %s", book_f)
                                 logger.debug("----")
                                 continue
                     except rarfile.NotRarFile:
-                        logger.warn("WARNING: Non-fatal error handling {} - actually a Zip.".format(book_f))
+                        logger.warning("Non-fatal error handling %s - actually a Zip.", book_f)
                         if not os.path.isfile(f_book_z) or args.replace:
-                            logger.info("EVENT: copying {} to {}".format(book_f, f_book_z))
+                            logger.info("EVENT: copying %s to %s", book_f, f_book_z)
                             if not args.dryrun:
                                 if os.path.isfile(f_book_z):
                                     # os.unlink(f_book_z)
@@ -184,17 +184,17 @@ def main():
                         logger.debug("----")
                         continue
                     except rarfile.RarCRCError:
-                        logger.error("ERROR: corrupted archive: {}".format(book_f))
+                        logger.error("ERROR: corrupted archive: %s", book_f)
                         logger.debug("----")
                         continue
                     except rarfile.BadRarFile:
-                        logger.error("ERROR: corrupted archive: {}".format(book_f))
+                        logger.error("ERROR: corrupted archive: %s", book_f)
                         logger.debug("----")
                         continue
                     with tempfile.TemporaryDirectory() as tmp_b_dir:
-                        logger.debug("       tmp_b_dir: {}".format(tmp_b_dir))
+                        logger.debug("       tmp_b_dir: %s", tmp_b_dir)
                         t_book_z = os.path.join(tmp_b_dir, book_z)
-                        logger.debug("        t_book_z: {}".format(t_book_z))
+                        logger.debug("        t_book_z: %s", t_book_z)
                         with zipfile.ZipFile(t_book_z, 'w') as zip:
                             hasComicInfoXml = False
                             pages = []
@@ -208,14 +208,14 @@ def main():
                             if not hasComicInfoXml:
                                 logger.debug("no comicinfo.xml found - injecting skeleton(?)")
                             pages.sort()
-                            logger.info("EVENT: making {} ".format(t_book_z))
+                            logger.info("EVENT: making %s ", t_book_z)
                             for page in pages:
-                                logger.debug("            page: {}".format(page))
+                                logger.debug("            page: %s", page)
                                 page_f = page[len(tmp_x_dir) + 1:]
-                                logger.debug("          page_f: {}".format(page_f))
+                                logger.debug("          page_f: %s", page_f)
                                 zip.write(page, page_f)
                             zip.close()
-                            logger.info("EVENT: copying {} to {}".format(book_z, book_destination))
+                            logger.info("EVENT: copying %s to %s", book_z, book_destination)
                             if not args.dryrun:
                                 if os.path.isfile(f_book_z):
                                     # os.unlink(f_book_z)
@@ -223,7 +223,7 @@ def main():
                                 shutil.copyfile(t_book_z, f_book_z)
         logger.debug("----")
 
-    logger.info("completed - {} books of {} files.".format(book_count, total))
+    logger.info("completed - %d books of %d files.", book_count, total)
     logger.info("exiting - success.")
 
 #####
