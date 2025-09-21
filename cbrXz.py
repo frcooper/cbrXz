@@ -82,7 +82,7 @@ def main():
             for f in files:
                 total += 1
 
-                f_ext = os.path.splitext(f)[1]
+                f_ext = os.path.splitext(f)[1].lower()
                 logger.debug("f_ext = {}".format(f_ext))
                 if f_ext in BOOK_TYPES:
                     logger.debug("valid type")
@@ -125,6 +125,7 @@ def main():
         logger.debug("          book_f: {}".format(book_f))
         book_b, book_t = os.path.splitext(book_f)
         logger.debug("          book_b: {}".format(book_b))
+        book_t = book_t.lower()
         logger.debug("          book_t: {}".format(book_t))
         book_destination = os.path.join(destination, book_p)
         logger.debug("book_destination: {}".format(book_destination))
