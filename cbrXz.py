@@ -103,11 +103,19 @@ def main():
 
     if args.root is not None:
         root = os.path.abspath(args.root)
-        if source.startswith(root):
-            source = root
-        else:
-            logger.error("ERROR: %s is not the child of %s", source, root)
+        try:
+            if os.path.commonpath([source, root]) == root:
+                source = root
+            else:
+                logger.error("ERROR: %s is not the child of %s", source, root)
+                exit()
+        except ValueError:
+            # Different drives on Windows can raise ValueError in commonpath
+            logger.error("ERROR: %s and %s are on different drives", source, root)
             exit()
+
+    # Determine base for relative paths (handles file vs dir sources)
+    rel_base = source if os.path.isdir(source) else os.path.dirname(source)
 
     logger.info("beginning - %d books of %d files.", book_count, total)
     logger.debug("----")
@@ -118,7 +126,7 @@ def main():
     for book in books:
         logger.info("EVENT: processing %s", book)
         logger.debug("            book: %s", book)
-        t_book = book[len(source) + 1:]
+        t_book = os.path.relpath(book, start=rel_base)
         logger.debug("          t_book: %s", t_book)
         book_p, book_f = os.path.split(t_book)
         logger.debug("          book_p: %s", book_p)
@@ -211,7 +219,7 @@ def main():
                             logger.info("EVENT: making %s ", t_book_z)
                             for page in pages:
                                 logger.debug("            page: %s", page)
-                                page_f = page[len(tmp_x_dir) + 1:]
+                                page_f = os.path.relpath(page, start=tmp_x_dir).replace(os.sep, "/")
                                 logger.debug("          page_f: %s", page_f)
                                 zip.write(page, page_f)
                             zip.close()
