@@ -1,6 +1,6 @@
 #! /usr/bin/python3
 
-import argparse
+import click
 import inspect
 import logging
 import os
@@ -46,43 +46,39 @@ def log(s):
     print("{}".format(s))
 
 
-def main():
+@click.command(context_settings={"help_option_names": ["-h", "--help"]})
+@click.argument('src', type=click.Path(exists=True, dir_okay=True, file_okay=True, path_type=str))
+@click.argument('dst', type=click.Path(dir_okay=True, file_okay=False, path_type=str))
+@click.option('--root', required=False, type=click.Path(exists=True, dir_okay=True, file_okay=True, path_type=str), help='Override root for relative paths')
+@click.option('-R', '--rar-only', 'raronly', is_flag=True, help='Process only .cbr/.rar files')
+@click.option('-F', '--replace', is_flag=True, help='Overwrite existing destination files')
+@click.option('-N', '--dry-run', 'dryrun', is_flag=True, help='Plan actions but do not write outputs')
+@click.option('--log-level', default='INFO', type=click.Choice(['CRITICAL','ERROR','WARNING','INFO','DEBUG','NOTSET'], case_sensitive=False), help='Logging verbosity')
+def main(src, dst, root, raronly, replace, dryrun, log_level):
     # cfg = {}
     total = 0
     books = []
     book_count = 0
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument('src')
-    parser.add_argument('dst')
-    parser.add_argument('--root', required=False)
-    parser.add_argument('-R', '--rar-only', dest='raronly', required=False, action='store_true')
-    parser.add_argument('-F', '--replace', dest='replace', required=False, action='store_true')
-    parser.add_argument('-N', '--dry-run', dest='dryrun', required=False, action='store_true')
-    parser.add_argument('--log-level', default='INFO', choices=['CRITICAL','ERROR','WARNING','INFO','DEBUG','NOTSET'])
-    args = parser.parse_args()
-
     # configure logging now that args are known
-    log_level = getattr(logging, args.log_level.upper(), logging.INFO)
+    log_level = getattr(logging, str(log_level).upper(), logging.INFO)
     logging.basicConfig(
         level=log_level,
         format='%(asctime)s - %(name)s:%(funcName)s:%(levelname)s - %(message)s'
     )
 
-    source = os.path.abspath(args.src)
-    destination = os.path.abspath(args.dst)
+    source = os.path.abspath(src)
+    destination = os.path.abspath(dst)
 
     # early input validation (no logging)
-    if not os.path.exists(source):
-        parser.error(f"Source not found: {source}")
     if not (os.path.isdir(source) or os.path.isfile(source)):
-        parser.error(f"Source must be a file or directory: {source}")
+        raise click.UsageError(f"Source must be a file or directory: {source}")
     if os.path.isfile(destination):
-        parser.error(f"Destination must be a directory (not a file): {destination}")
+        raise click.UsageError(f"Destination must be a directory (not a file): {destination}")
     try:
         os.makedirs(destination, exist_ok=True)
     except Exception as e:  # pylint: disable=broad-except
-        parser.error(f"Cannot create destination directory: {destination} ({e})")
+        raise click.ClickException(f"Cannot create destination directory: {destination} ({e})")
 
     logger.debug("source: %s", source)
     logger.debug("destination: %s", destination)
@@ -101,7 +97,7 @@ def main():
                 logger.debug("f_ext = %s", f_ext)
                 if f_ext in BOOK_TYPES:
                     logger.debug("valid type")
-                    if args.raronly:
+                    if raronly:
                         logger.debug("raronly active")
                         if not f_ext in ['.cbr', '.rar']:
                             logger.debug("not a rar - next pls")
@@ -116,17 +112,17 @@ def main():
                 else:
                     logger.info("%s is not a supported filetype.", os.path.join(path, f))
 
-    if args.root is not None:
-        root = os.path.abspath(args.root)
+    if root is not None:
+        root_abs = os.path.abspath(root)
         try:
-            if os.path.commonpath([source, root]) == root:
-                source = root
+            if os.path.commonpath([source, root_abs]) == root_abs:
+                source = root_abs
             else:
-                # was logger.error + exit; use argparse error for clean early exit
-                parser.error(f"{source} is not the child of {root}")
+                # raise usage error for clean early exit
+                raise click.UsageError(f"{source} is not the child of {root_abs}")
         except ValueError:
             # Different drives on Windows can raise ValueError in commonpath
-            parser.error(f"{source} and {root} are on different drives")
+            raise click.UsageError(f"{source} and {root_abs} are on different drives")
 
     # Determine base for relative paths (handles file vs dir sources)
     rel_base = source if os.path.isdir(source) else os.path.dirname(source)
@@ -154,7 +150,7 @@ def main():
 
         if not os.path.exists(book_destination):
             logger.info("EVENT: making %s", book_destination)
-            if not args.dryrun:
+            if not dryrun:
                 os.makedirs(book_destination)
 
         if book_t in ['.cbr', '.rar']:
@@ -162,7 +158,7 @@ def main():
             logger.debug("          book_z: %s", book_z)
             f_book_z = os.path.join(book_destination, book_z)
             logger.debug("        f_book_z: %s", f_book_z)
-            if not os.path.isfile(f_book_z) or args.replace:
+            if not os.path.isfile(f_book_z) or replace:
                 with tempfile.TemporaryDirectory() as tmp_x_dir:
                     logger.debug("       tmp_x_dir: %s", tmp_x_dir)
                     try:
@@ -183,9 +179,9 @@ def main():
                                 continue
                     except rarfile.NotRarFile:
                         logger.warning("Non-fatal error handling %s - actually a Zip.", book_f)
-                        if not os.path.isfile(f_book_z) or args.replace:
+                        if not os.path.isfile(f_book_z) or replace:
                             logger.info("EVENT: copying %s to %s", book_f, f_book_z)
-                            if not args.dryrun:
+                            if not dryrun:
                                 if os.path.isfile(f_book_z):
                                     # os.unlink(f_book_z)
                                     pass
@@ -225,7 +221,7 @@ def main():
                                 zip.write(page, page_f)
                             zip.close()
                             logger.info("EVENT: copying %s to %s", book_z, book_destination)
-                            if not args.dryrun:
+                            if not dryrun:
                                 if os.path.isfile(f_book_z):
                                     # os.unlink(f_book_z)
                                     pass
@@ -239,9 +235,9 @@ def main():
             else:
                 dest_name = book_f
             book_destination_f = os.path.join(book_destination, dest_name)
-            if not os.path.isfile(book_destination_f) or args.replace:
+            if not os.path.isfile(book_destination_f) or replace:
                 logger.info("EVENT: copying %s to %s", book_f, book_destination_f)
-                if not args.dryrun:
+                if not dryrun:
                     if os.path.isfile(book_destination_f):
                         logger.info("EVENT: %s already exists - removing...", book_destination_f)
                         # os.unlink(book_destination_f)
