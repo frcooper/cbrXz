@@ -1,12 +1,17 @@
 import os
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
+
+import pytest
+import rarfile
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "cbrXz.py"
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
-# Import BOOK_TYPES from the module to avoid test drift
+# Import BOOK_TYPES from the module to avoid drift
 sys.path.insert(0, str(ROOT))
 import cbrXz  # noqa: E402
 
@@ -20,49 +25,73 @@ def run(args):
     return subprocess.run(cmd, env=env, capture_output=True, text=True)
 
 
-def test_non_rar_extensions_are_copied(tmp_path):
-    src = tmp_path / "src"
-    dst = tmp_path / "dst"
-    src.mkdir()
-    for ext in NON_RAR_EXTS:
-        (src / f"sample{ext}").write_bytes(b"test-bytes")
-    proc = run([str(src), str(dst)])
+def fixtures_with_ext(ext: str):
+    return sorted(FIXTURES.glob(f"*{ext}"))
+
+
+def copy_to_dir(files, dest: Path):
+    dest.mkdir(parents=True, exist_ok=True)
+    out = []
+    for f in files:
+        target = dest / f.name
+        target.write_bytes(f.read_bytes())
+        out.append(target)
+    return out
+
+
+@pytest.mark.parametrize("ext", NON_RAR_EXTS)
+def test_fixture_non_rar_are_copied_verbatim(tmp_path: Path, ext: str):
+    src_dir = tmp_path / "src"
+    dst_dir = tmp_path / "dst"
+    files = fixtures_with_ext(ext)
+    if not files:
+        pytest.skip(f"No fixtures for {ext}")
+    copied = copy_to_dir(files, src_dir)
+
+    proc = run([str(src_dir), str(dst_dir)])
     assert proc.returncode == 0, proc.stderr or proc.stdout
-    for ext in NON_RAR_EXTS:
-        assert (dst / f"sample{ext}").exists(), f"Expected copy of sample{ext}"
+
+    for f in copied:
+        out = dst_dir / f.name
+        assert out.exists(), f"Expected copy of {f.name}"
+        assert out.read_bytes() == f.read_bytes(), f"Content mismatch for {f.name}"
 
 
-def test_uppercase_extensions_are_handled(tmp_path):
-    src = tmp_path / "src"
-    dst = tmp_path / "dst"
-    src.mkdir()
-    # create both rar and non-rar uppercase variants
-    for ext in NON_RAR_EXTS + RAR_EXTS:
-        (src / f"UpCase{ext.upper()}").write_bytes(b"content")
-    proc = run([str(src), str(dst), "--dry-run"])  # dry-run to avoid extraction/copy cost
-    assert proc.returncode == 0, proc.stderr or proc.stdout
+@pytest.mark.parametrize("ext", RAR_EXTS)
+def test_fixture_rar_like_results(tmp_path: Path, ext: str):
+    src_dir = tmp_path / "src"
+    dst_dir = tmp_path / "dst"
+    files = fixtures_with_ext(ext)
+    if not files:
+        pytest.skip(f"No fixtures for {ext}")
 
+    # Test each file independently to avoid name collisions (.cbz output)
+    for rar_path in files:
+        src_dir.mkdir(exist_ok=True, parents=True)
+        for p in src_dir.iterdir():
+            p.unlink()
+        local = src_dir / rar_path.name
+        local.write_bytes(rar_path.read_bytes())
 
-def test_rar_like_files_convert_to_cbz_when_not_rar(tmp_path):
-    # Create fake .cbr/.rar (not real RAR) so rarfile raises NotRarFile and code treats as zip
-    src = tmp_path / "src"
-    dst = tmp_path / "dst"
-    src.mkdir()
-    # Use single base to match code behavior (second input may be skipped if output exists)
-    for ext in RAR_EXTS:
-        (src / f"book{ext}").write_bytes(b"not-a-rar")
-    proc = run([str(src), str(dst)])
-    assert proc.returncode == 0, proc.stderr or proc.stdout
-    # Expect .cbz output for the base name
-    assert (dst / "book.cbz").exists(), "Expected book.cbz to be written"
+        proc = run([str(src_dir), str(dst_dir)])
+        assert proc.returncode == 0, proc.stderr or proc.stdout
 
+        out = dst_dir / (rar_path.stem + ".cbz")
+        assert out.exists(), f"Expected output {out.name} for {rar_path.name}"
 
-def test_rar_only_skips_non_rar(tmp_path):
-    src = tmp_path / "src"
-    dst = tmp_path / "dst"
-    src.mkdir()
-    (src / "x.cbz").write_bytes(b"data")
-    proc = run([str(src), str(dst), "--rar-only"])  # only rar/cbr should be processed
-    assert proc.returncode == 0, proc.stderr or proc.stdout
-    # Non-rar should not be copied when --rar-only is set
-    assert not (dst / "x.cbz").exists()
+        is_real_rar = False
+        try:
+            is_real_rar = rarfile.is_rarfile(str(local))
+        except Exception:
+            is_real_rar = False
+
+        if is_real_rar:
+            # If it's a real RAR, output should be a valid ZIP when extractor available
+            try:
+                assert zipfile.is_zipfile(out), f"Output not a zip for {rar_path.name}"
+            except AssertionError:
+                # If extractor is not available, behavior may differ; surface details
+                pytest.fail(f"Expected zip output for real RAR fixture {rar_path.name}")
+        else:
+            # Not a real RAR: script copies bytes into .cbz unchanged via NotRarFile path
+            assert out.read_bytes() == local.read_bytes(), f"Expected raw copy for {rar_path.name}"

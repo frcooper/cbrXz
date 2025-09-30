@@ -1,0 +1,5 @@
+testfile.cbr filter=lfs diff=lfs merge=lfs -text
+testfile.cbz filter=lfs diff=lfs merge=lfs -text
+testfile.epub filter=lfs diff=lfs merge=lfs -text
+testfile.pdf filter=lfs diff=lfs merge=lfs -text
+testfile.cb7 filter=lfs diff=lfs merge=lfs -text
