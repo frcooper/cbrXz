@@ -157,19 +157,6 @@ def main():
             if not args.dryrun:
                 os.makedirs(book_destination)
 
-        if not book_t in ['.cbr', '.rar']:
-            book_destination_f = os.path.join(book_destination, book_f)
-            if not os.path.isfile(book_destination_f) or args.replace:
-                logger.info("EVENT: copying %s to %s", book_f, book_destination)
-                if not args.dryrun:
-                    if os.path.isfile(book_destination_f):
-                        logger.info("EVENT: %s already exists - removing...", book_destination_f)
-                        # os.unlink(book_destination_f)
-                        pass
-                    shutil.copy2(book, book_destination_f)
-            logger.debug("----")
-            continue
-
         if book_t in ['.cbr', '.rar']:
             book_z = "{}.cbz".format(book_b)
             logger.debug("          book_z: %s", book_z)
@@ -243,6 +230,25 @@ def main():
                                     # os.unlink(f_book_z)
                                     pass
                                 shutil.copy2(t_book_z, f_book_z)
+        else:
+            # Determine destination filename: rename .zip -> .cbz and .7z -> .cb7
+            if book_t == '.zip':
+                dest_name = f"{book_b}.cbz"
+            elif book_t == '.7z':
+                dest_name = f"{book_b}.cb7"
+            else:
+                dest_name = book_f
+            book_destination_f = os.path.join(book_destination, dest_name)
+            if not os.path.isfile(book_destination_f) or args.replace:
+                logger.info("EVENT: copying %s to %s", book_f, book_destination_f)
+                if not args.dryrun:
+                    if os.path.isfile(book_destination_f):
+                        logger.info("EVENT: %s already exists - removing...", book_destination_f)
+                        # os.unlink(book_destination_f)
+                        pass
+                    shutil.copy2(book, book_destination_f)
+            logger.debug("----")
+            continue
         logger.debug("----")
 
     logger.info("completed - %d books of %d files.", book_count, total)

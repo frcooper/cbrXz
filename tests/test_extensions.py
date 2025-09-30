@@ -39,6 +39,16 @@ def copy_to_dir(files, dest: Path):
     return out
 
 
+def expected_non_rar_name(p: Path) -> str:
+    ext = p.suffix.lower()
+    stem = p.stem
+    if ext == ".zip":
+        return f"{stem}.cbz"
+    if ext == ".7z":
+        return f"{stem}.cb7"
+    return p.name
+
+
 @pytest.mark.parametrize("ext", NON_RAR_EXTS)
 def test_fixture_non_rar_are_copied_verbatim(tmp_path: Path, ext: str):
     src_dir = tmp_path / "src"
@@ -52,9 +62,10 @@ def test_fixture_non_rar_are_copied_verbatim(tmp_path: Path, ext: str):
     assert proc.returncode == 0, proc.stderr or proc.stdout
 
     for f in copied:
-        out = dst_dir / f.name
-        assert out.exists(), f"Expected copy of {f.name}"
-        assert out.read_bytes() == f.read_bytes(), f"Content mismatch for {f.name}"
+        out_name = expected_non_rar_name(f)
+        out = dst_dir / out_name
+        assert out.exists(), f"Expected copy of {out_name}"
+        assert out.read_bytes() == f.read_bytes(), f"Content mismatch for {out_name}"
 
 
 @pytest.mark.parametrize("ext", RAR_EXTS)
