@@ -59,7 +59,18 @@ def isZip(file_path):
 def filterBook(s):
     return False
 
-def filterPage(s):
+def filterPage(s: str) -> bool:
+    """Return True if the page/path should be filtered out as junk.
+    Skips Windows/macOS junk and any content under __MACOSX.
+    """
+    # Normalize to forward slashes for path checks
+    sp = s.replace('\\', '/').strip()
+    base = os.path.basename(sp)
+    if base in ('Thumbs.db', '.DS_Store'):
+        return True
+    # Skip anything under __MACOSX
+    if sp.startswith('__MACOSX/') or '/__MACOSX/' in sp:
+        return True
     return False
 
 
@@ -229,6 +240,10 @@ def main(src, dst, root, replace, dryrun, log_level):
                             pages = []
                             for xt_p, xt_fls, xt_fis in os.walk(tmp_x_dir):                                              # pylint: disable=W0612
                                 for xt_fi in xt_fis:
+                                    rel = os.path.relpath(os.path.join(xt_p, xt_fi), start=tmp_x_dir)
+                                    rel = rel.replace(os.sep, '/')
+                                    if filterPage(rel):
+                                        continue
                                     # TBD: test for credit pages, comicinfo.xml
                                     if xt_fi in ['ComicInfo.xml']:
                                         hasComicInfoXml = True
@@ -241,6 +256,8 @@ def main(src, dst, root, replace, dryrun, log_level):
                             for page in pages:
                                 logger.debug("            page: %s", page)
                                 page_f = os.path.relpath(page, start=tmp_x_dir).replace(os.sep, "/")
+                                if filterPage(page_f):
+                                    continue
                                 logger.debug("          page_f: %s", page_f)
                                 zip.write(page, page_f)
                             zip.close()
