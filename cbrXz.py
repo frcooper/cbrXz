@@ -48,13 +48,12 @@ def log(s):
 
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
 @click.argument('src', type=click.Path(exists=True, dir_okay=True, file_okay=True, path_type=str))
-@click.argument('dst', type=click.Path(dir_okay=True, file_okay=False, path_type=str))
+@click.argument('dst', type=click.Path(dir_okay=True, file_okay=True, path_type=str))
 @click.option('--root', required=False, type=click.Path(exists=True, dir_okay=True, file_okay=True, path_type=str), help='Override root for relative paths')
-@click.option('-R', '--rar-only', 'raronly', is_flag=True, help='Process only .cbr/.rar files')
 @click.option('-F', '--replace', is_flag=True, help='Overwrite existing destination files')
 @click.option('-N', '--dry-run', 'dryrun', is_flag=True, help='Plan actions but do not write outputs')
 @click.option('--log-level', default='INFO', type=click.Choice(['CRITICAL','ERROR','WARNING','INFO','DEBUG','NOTSET'], case_sensitive=False), help='Logging verbosity')
-def main(src, dst, root, raronly, replace, dryrun, log_level):
+def main(src, dst, root, replace, dryrun, log_level):
     # cfg = {}
     total = 0
     books = []
@@ -97,11 +96,6 @@ def main(src, dst, root, raronly, replace, dryrun, log_level):
                 logger.debug("f_ext = %s", f_ext)
                 if f_ext in BOOK_TYPES:
                     logger.debug("valid type")
-                    if raronly:
-                        logger.debug("raronly active")
-                        if not f_ext in ['.cbr', '.rar']:
-                            logger.debug("not a rar - next pls")
-                            continue
                     if filterBook(f):
                         logger.debug("filtered - next pls")
                         continue

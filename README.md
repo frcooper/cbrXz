@@ -12,11 +12,9 @@ Supported types: .cbr, .rar, .cbz, .zip, .cb7, .7z, .pdf, .epub
 
 - Python 3.8+
 - Python packages: see `requirements.txt` (pytest, rarfile)
-- RAR extraction (only needed for real .cbr/.rar archives):
+- RAR extraction:
   - Windows: UnRAR.exe on PATH, or bsdtar/libarchive
   - macOS/Linux: unrar or bsdtar/libarchive on PATH
-
-When a .cbr/.rar is not a real RAR, the tool falls back to treating it as a zip and copies bytes to `.cbz` unchanged.
 
 ## Install
 
@@ -26,8 +24,7 @@ When a .cbr/.rar is not a real RAR, the tool falls back to treating it as a zip 
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-# Optional (for real RAR extraction): install UnRAR.exe and ensure it is on PATH
-# e.g., place UnRAR.exe in a directory listed in $env:PATH
+winget install RARLab.WinRAR
 ```
 
 ### Linux/macOS (bash)
@@ -36,10 +33,10 @@ pip install -r requirements.txt
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-# Optional for real RAR extraction:
-# Debian/Ubuntu:   sudo apt-get update && sudo apt-get install unrar || sudo apt-get install libarchive-tools
-# Fedora/RHEL:     sudo dnf install unrar || sudo dnf install bsdtar
-# macOS (Homebrew): brew install unrar || brew install libarchive
+
+Debian/Ubuntu:     sudo apt-get update && sudo apt-get install unrar || sudo apt-get install libarchive-tools
+Fedora/RHEL:       sudo dnf install unrar || sudo dnf install bsdtar
+macOS (Homebrew):  brew install unrar || brew install libarchive
 ```
 
 ## Usage
@@ -53,11 +50,10 @@ python cbrXz.py SRC DST [options]
 
 ### Options
 
-- `-R, --rar-only`            Process only .cbr/.rar; skip other types
 - `-F, --replace`             Overwrite existing destination files
 - `-N, --dry-run`             Log actions but do not write outputs
 - `--root PATH`               Treat PATH as the source root when computing relative paths
-- `--log-level {CRITICAL,ERROR,WARNING,INFO,DEBUG,NOTSET}`  Set logging verbosity (default: INFO)
+- `--log-level {ERROR,WARNING,INFO,DEBUG}`  Set logging verbosity (default: INFO)
 
 ### Behavior
 
@@ -72,7 +68,7 @@ python cbrXz.py SRC DST [options]
 Convert a tree and overwrite any existing outputs:
 
 ```pwsh
-python cbrXz.py "C:\Comics\Inbox" "D:\Comics\Library" --rar-only --replace --log-level INFO
+python cbrXz.py "C:\Comics\Inbox" "D:\Comics\Library" --replace --log-level INFO
 ```
 
 Process a single file:
@@ -104,9 +100,3 @@ pytest -q
 
 - No license is provided.
 - This software is provided “as is,” without warranty of any kind, express or implied. Use at your own risk.
-
-## Notes
-
-- For real RAR conversion, ensure a compatible extractor is available on PATH (e.g., `unrar`, `bsdtar`, or `UnRAR.exe`).
-- `.cb7` / `.7z` are copied unchanged; no 7z recompression is performed.
-- Long/very deep paths on Windows may require enabling long path support.
