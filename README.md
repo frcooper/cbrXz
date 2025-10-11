@@ -115,7 +115,6 @@ Checks added:
 - Commitlint (commit messages): `.github/workflows/commitlint.yml`
 - Semantic PR Title (PR title): `.github/workflows/semantic-pr.yml`
 
-
 Conventional Commit examples:
 
 - `feat(reader): add natural sort of pages`
