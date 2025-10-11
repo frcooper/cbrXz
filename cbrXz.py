@@ -1,7 +1,6 @@
 #! /usr/bin/python3
 
 import click
-import inspect
 import logging
 import os
 import rarfile
@@ -45,17 +44,6 @@ def get_version() -> str:
             continue
     return "0.0.0"
 
-def isZip(file_path):
-    # Define the magic number for ZIP files
-    zip_magic_number = b'\x50\x4b\x03\x04'  # PK\x03\x04
-
-    # Read the first 4 bytes of the file
-    with open(file_path, 'rb') as f:
-        file_header = f.read(4)
-
-    # Check if the file header matches the ZIP magic number
-    return file_header == zip_magic_number
-
 def filterBook(s):
     return False
 
@@ -72,18 +60,6 @@ def filterPage(s: str) -> bool:
     if sp.startswith('__MACOSX/') or '/__MACOSX/' in sp:
         return True
     return False
-
-
-def debug(s):
-    print("{}[{}]->{}: {}".format(inspect.stack()[2].function, inspect.stack()[2].lineno, inspect.stack()[1].function, s))
-
-
-def error(s):
-    print("{}[{}] FATAL ERROR: {}".format(inspect.stack()[2].function, inspect.stack()[2].lineno, s))
-
-
-def log(s):
-    print("{}".format(s))
 
 
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
@@ -129,7 +105,7 @@ def main(src, dst, root, replace, dryrun, log_level):
         total = 1
         book_count = 1
     else:
-        for path, folders, files in os.walk(source):                                                  # pylint: disable=W0612
+        for path, _, files in os.walk(source):
             for f in files:
                 total += 1
 
@@ -235,10 +211,10 @@ def main(src, dst, root, replace, dryrun, log_level):
                         logger.debug("       tmp_b_dir: %s", tmp_b_dir)
                         t_book_z = os.path.join(tmp_b_dir, book_z)
                         logger.debug("        t_book_z: %s", t_book_z)
-                        with zipfile.ZipFile(t_book_z, 'w') as zip:
+                        with zipfile.ZipFile(t_book_z, 'w', compression=zipfile.ZIP_STORED) as zip:
                             hasComicInfoXml = False
                             pages = []
-                            for xt_p, xt_fls, xt_fis in os.walk(tmp_x_dir):                                              # pylint: disable=W0612
+                            for xt_p, _, xt_fis in os.walk(tmp_x_dir):
                                 for xt_fi in xt_fis:
                                     rel = os.path.relpath(os.path.join(xt_p, xt_fi), start=tmp_x_dir)
                                     rel = rel.replace(os.sep, '/')

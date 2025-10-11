@@ -61,6 +61,7 @@ python cbrXz.py SRC DST [options]
 - Extensions are matched case‑insensitively.
 - Non‑RAR types are copied with metadata preserved (via `shutil.copy2`).
 - .cbr/.rar are extracted to a temp dir and re‑packed as `.cbz`; output goes under `DST/<relative subpath>/`.
+- Repacked `.cbz` archives use stored (uncompressed) ZIP entries. Most comic pages are already compressed image formats (JPEG/PNG/WebP), so deflation adds CPU time with negligible size savings; the remaining text/XML is a tiny fraction of total size.
 - Relative paths use `os.path.relpath` for robustness; zip arcnames use forward slashes.
 - Dry‑run skips file system writes but will still walk the tree and plan actions.
 
