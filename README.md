@@ -115,15 +115,6 @@ Checks added:
 - Commitlint (commit messages): `.github/workflows/commitlint.yml`
 - Semantic PR Title (PR title): `.github/workflows/semantic-pr.yml`
 
-To enforce via branch protection (GitHub UI):
-
-1. Settings → Branches → Branch protection rules → New rule (target `master`).
-2. Enable “Require a pull request before merging”.
-3. Enable “Require status checks to pass before merging” and select required checks:
-   - CI
-   - Commitlint
-   - Semantic PR Title
-4. Optionally enable “Require linear history” and allow “Squash merge only”.
 
 Conventional Commit examples:
 
