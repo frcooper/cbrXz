@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [ master ]
+    branches: [ master, go-rewrite ]
 
 jobs:
   test:
@@ -35,12 +35,29 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Setup Go (go-rewrite)
+        if: github.ref_name == 'go-rewrite'
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21.x'
+
+      - name: Build Go CLI (go-rewrite)
+        if: github.ref_name == 'go-rewrite'
+        shell: bash
+        run: |
+          mkdir -p .bin
+          go build -o .bin/cbrxz ./cmd/cbrxz
+
       - name: Run tests (Ubuntu)
         if: matrix.os == 'ubuntu-latest'
         shell: bash
+        env:
+          CBRXZ_CMD: ${{ github.ref_name == 'go-rewrite' && format('{0}/.bin/cbrxz', github.workspace) || '' }}
         run: pytest -q
 
       - name: Run tests (Windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
+        env:
+          CBRXZ_CMD: ${{ github.ref_name == 'go-rewrite' && format('{0}\.bin\cbrxz.exe', github.workspace) || '' }}
         run: pytest -q

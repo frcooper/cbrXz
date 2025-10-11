@@ -123,6 +123,18 @@ Conventional Commit examples:
 - `docs(readme): add install notes`
 - Breaking: `feat!: change default compression to stored`
 
+## Go rewrite (experimental)
+
+An experimental Go implementation lives on the `go-rewrite` branch under `cmd/cbrxz`.
+
+Build and run:
+
+- pwsh:
+  - go build -o .\.bin\cbrxz .\cmd\cbrxz
+  - .\.bin\cbrxz --version
+
+
+
 ## License and Warranty
 
 - No license is provided.

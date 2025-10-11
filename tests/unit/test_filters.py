@@ -1,6 +1,11 @@
 from pathlib import Path
 import sys
 
+import pytest
+
+# Skip these tests if the Python module isn't available (e.g., go-rewrite branch)
+pytest.importorskip("cbrXz")
+
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 import cbrXz  # noqa: E402
