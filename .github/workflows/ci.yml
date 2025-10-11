@@ -23,10 +23,6 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          if exist requirements.txt (
-            pip install -r requirements.txt
-          ) else (
-            echo No requirements.txt
-          )
+          pip install -r requirements.txt
       - name: Run tests
         run: pytest -q
