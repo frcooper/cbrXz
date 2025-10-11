@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cbrXz"
+version = "0.0.4"
+description = "Normalize comic archives: convert .cbr/.rar to .cbz and mirror/copy other supported types."
+readme = { file = "README.md", content-type = "text/markdown" }
+authors = [{ name = "frcooper" }]
+requires-python = ">=3.8"
+dependencies = [
+  "click>=8",
+  "rarfile>=4",
+]
+keywords = ["comics", "cbr", "cbz", "rar", "zip"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Environment :: Console",
+  "Operating System :: OS Independent",
+  "License :: Other/Proprietary License",
+]
+
+# This project uses a single-module layout: package the top-level cbrXz.py
+[tool.setuptools]
+py-modules = ["cbrXz"]
+
+[project.scripts]
+# This exposes a console command `cbrXz` that runs the click CLI main() in cbrXz.py
+cbrXz = "cbrXz:main"
+
+[project.urls]
+Homepage = "https://github.com/frcooper/cbrXz"
+Repository = "https://github.com/frcooper/cbrXz"
+
+[tool.semantic_release]
+version_toml = ["pyproject.toml:project.version"]
+branch = "master"
+upload_to_pypi = false
+upload_to_release = true
+build_command = "python -m build"
+changelog_file = "CHANGELOG.md"

@@ -54,6 +54,7 @@ python cbrXz.py SRC DST [options]
 - `-N, --dry-run`             Log actions but do not write outputs
 - `--root PATH`               Treat PATH as the source root when computing relative paths
 - `--log-level {ERROR,WARNING,INFO,DEBUG}`  Set logging verbosity (default: INFO)
+- `--version`                 Print version and exit (current: v0.0.4)
 
 ### Behavior
 
