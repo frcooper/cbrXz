@@ -119,7 +119,7 @@ def main(src, dst, root, replace, dryrun, log_level):
                     logger.debug("good book - adding to array")
                     books.append(os.path.join(path, f))
                     book_count += 1
-                    logger.debug("books[] = %s", books)
+                    logger.debug("books+=1 -> %d collected (of %d files)", book_count, total)
                 else:
                     logger.info("%s is not a supported filetype.", os.path.join(path, f))
 
@@ -194,8 +194,7 @@ def main(src, dst, root, replace, dryrun, log_level):
                             logger.info("EVENT: copying %s to %s", book_f, f_book_z)
                             if not dryrun:
                                 if os.path.isfile(f_book_z):
-                                    # os.unlink(f_book_z)
-                                    pass
+                                    os.unlink(f_book_z)
                                 shutil.copy2(book, f_book_z)
                         logger.debug("----")
                         continue
@@ -240,8 +239,7 @@ def main(src, dst, root, replace, dryrun, log_level):
                             logger.info("EVENT: copying %s to %s", book_z, book_destination)
                             if not dryrun:
                                 if os.path.isfile(f_book_z):
-                                    # os.unlink(f_book_z)
-                                    pass
+                                    os.unlink(f_book_z)
                                 shutil.copy2(t_book_z, f_book_z)
         else:
             # Determine destination filename: rename .zip -> .cbz and .7z -> .cb7
@@ -257,8 +255,7 @@ def main(src, dst, root, replace, dryrun, log_level):
                 if not dryrun:
                     if os.path.isfile(book_destination_f):
                         logger.info("EVENT: %s already exists - removing...", book_destination_f)
-                        # os.unlink(book_destination_f)
-                        pass
+                        os.unlink(book_destination_f)
                     shutil.copy2(book, book_destination_f)
             logger.debug("----")
             continue
