@@ -54,7 +54,7 @@ python cbrXz.py SRC DST [options]
 - `-N, --dry-run`             Log actions but do not write outputs
 - `--root PATH`               Treat PATH as the source root when computing relative paths
 - `--log-level {ERROR,WARNING,INFO,DEBUG}`  Set logging verbosity (default: INFO)
-- `--version`                 Print version and exit (current: v0.0.4)
+- `-V, --version`             Print release tag (vX.Y.Z) and exit
 
 ### Behavior
 
@@ -82,6 +82,14 @@ Constrain relative paths to a specific root (useful when SRC is nested):
 
 ```pwsh
 python cbrXz.py .\nested\series .\out --root .\nested
+```
+
+Print the current release tag:
+
+```pwsh
+python cbrXz.py --version
+# or
+python cbrXz.py -V
 ```
 
 ## Tests and fixtures

@@ -8,6 +8,8 @@ import rarfile
 import shutil
 import tempfile
 import zipfile
+import re
+from importlib import metadata as _metadata
 
 
 
@@ -15,6 +17,33 @@ import zipfile
 logger = logging.getLogger(__name__)
 
 BOOK_TYPES = ['.cbr', '.rar', '.cbz', '.zip', '.cb7', '.7z', '.pdf', '.epub']
+
+def get_version() -> str:
+    """Return the project version, preferring installed package metadata.
+    Fallback to reading pyproject.toml's [project].version when running from source.
+    """
+    pkg_name = "cbrXz"
+    try:
+        v = _metadata.version(pkg_name)
+        return v
+    except Exception:
+        pass
+    # Fallback: read pyproject.toml next to this file or repo root
+    candidates = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "pyproject.toml"),
+        os.path.join(os.path.abspath(os.getcwd()), "pyproject.toml"),
+    ]
+    for path in candidates:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                content = f.read()
+            # Simple regex for: version = "x.y.z"
+            m = re.search(r"^version\s*=\s*\"([^\"]+)\"", content, re.MULTILINE)
+            if m:
+                return m.group(1)
+        except Exception:
+            continue
+    return "0.0.0"
 
 def isZip(file_path):
     # Define the magic number for ZIP files
@@ -47,6 +76,7 @@ def log(s):
 
 
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
+@click.version_option(version=f"v{get_version()}", prog_name="cbrXz")
 @click.argument('src', type=click.Path(exists=True, dir_okay=True, file_okay=True, path_type=str))
 @click.argument('dst', type=click.Path(dir_okay=True, file_okay=True, path_type=str))
 @click.option('--root', required=False, type=click.Path(exists=True, dir_okay=True, file_okay=True, path_type=str), help='Override root for relative paths')
