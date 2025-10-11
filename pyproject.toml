@@ -17,7 +17,7 @@ keywords = ["comics", "cbr", "cbz", "rar", "zip"]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
-  "Programming Language :: Python :: Python :: 3.12",
+  "Programming Language :: Python :: 3.12",
   "Environment :: Console",
   "Operating System :: OS Independent",
   "License :: Other/Proprietary License",
@@ -40,9 +40,9 @@ version_toml = ["pyproject.toml:project.version"]
 branch = "master"
 upload_to_pypi = false
 upload_to_release = true
-build_command = false
+build_command = ""
 changelog_file = "CHANGELOG.md"
-commit_parser = "angular"
+commit_parser = "conventional"
 changelog_sections = [
   { title = "Features", section = "feat" },
   { title = "Bug Fixes", section = "fix" },
