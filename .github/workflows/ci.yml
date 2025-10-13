@@ -9,6 +9,25 @@ jobs:
   test:
     name: Test on ${{ matrix.os }} / Python ${{ matrix.python-version }}
     runs-on: ${{ matrix.os }}
+    # Skip CI based on PR labels/titles or commit message markers
+    if: >-
+      !(
+        github.event_name == 'pull_request' && (
+          startsWith(github.event.pull_request.title, 'skip ci') ||
+          startsWith(github.event.pull_request.title, 'ci skip') ||
+          contains(github.event.pull_request.title, '[skip ci]') ||
+          contains(github.event.pull_request.title, '[ci skip]') ||
+          contains(github.event.pull_request.labels.*.name, 'skip-ci')
+        )
+      ) &&
+      !(
+        github.event_name == 'push' && (
+          contains(github.event.head_commit.message, '[skip ci]') ||
+          contains(github.event.head_commit.message, '[ci skip]') ||
+          startsWith(github.event.head_commit.message, 'skip ci') ||
+          startsWith(github.event.head_commit.message, 'ci skip')
+        )
+      )
     strategy:
       fail-fast: false
       matrix:
