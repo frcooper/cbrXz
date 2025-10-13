@@ -18,31 +18,13 @@ logger = logging.getLogger(__name__)
 BOOK_TYPES = ['.cbr', '.rar', '.cbz', '.zip', '.cb7', '.7z', '.pdf', '.epub']
 
 def get_version() -> str:
-    """Return the project version, preferring installed package metadata.
-    Fallback to reading pyproject.toml's [project].version when running from source.
+    """Return the project version from installed package metadata.
+    Falls back to a dev string when not installed (local testing).
     """
-    pkg_name = "cbrXz"
     try:
-        v = _metadata.version(pkg_name)
-        return v
+        return _metadata.version("cbrXz")
     except Exception:
-        pass
-    # Fallback: read pyproject.toml next to this file or repo root
-    candidates = [
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "pyproject.toml"),
-        os.path.join(os.path.abspath(os.getcwd()), "pyproject.toml"),
-    ]
-    for path in candidates:
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                content = f.read()
-            # Simple regex for: version = "x.y.z"
-            m = re.search(r"^version\s*=\s*\"([^\"]+)\"", content, re.MULTILINE)
-            if m:
-                return m.group(1)
-        except Exception:
-            continue
-    return "0.0.0"
+        return "0.0.0-dev"
 
 def filterBook(s):
     return False
