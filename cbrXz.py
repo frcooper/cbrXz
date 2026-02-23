@@ -26,7 +26,13 @@ def get_version() -> str:
     except Exception:
         return "0.0.0-dev"
 
-def filterBook(s):
+def filterBook(s: str) -> bool:
+    """Return True if the book/path should be filtered out."""
+    name = os.path.basename(s)
+    if re.search(r"\[GER\]", name, re.IGNORECASE):
+        return True
+    if re.search(r"scanlation", name, re.IGNORECASE):
+        return True
     return False
 
 def filterPage(s: str) -> bool:
