@@ -152,6 +152,10 @@ def main(src, dst, root, replace, dryrun, log_level):
             f_book_z = os.path.join(book_destination, book_z)
             logger.debug("        f_book_z: %s", f_book_z)
             if not os.path.isfile(f_book_z) or replace:
+                if dryrun:
+                    logger.info("EVENT: would extract %s and create %s", book_f, f_book_z)
+                    logger.debug("----")
+                    continue
                 with tempfile.TemporaryDirectory() as tmp_x_dir:
                     logger.debug("       tmp_x_dir: %s", tmp_x_dir)
                     try:
