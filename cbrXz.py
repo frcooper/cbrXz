@@ -217,7 +217,6 @@ def main(src, dst, root, replace, dryrun, log_level):
                                     continue
                                 logger.debug("          page_f: %s", page_f)
                                 zip.write(page, page_f)
-                            zip.close()
                             logger.info("EVENT: copying %s to %s", book_z, book_destination)
                             if not dryrun:
                                 if os.path.isfile(f_book_z):
