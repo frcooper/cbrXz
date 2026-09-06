@@ -31,6 +31,8 @@ def filterBook(s: str) -> bool:
     name = os.path.basename(s)
     if re.search(r"\[GER\]", name, re.IGNORECASE):
         return True
+    if re.search(r"\(german\)", name, re.IGNORECASE):
+        return True
     if re.search(r"scanlation", name, re.IGNORECASE):
         return True
     return False
