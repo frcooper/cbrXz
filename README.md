@@ -108,12 +108,13 @@ pytest -q
 
 ## Enforcing Conventional Commits
 
-This repo includes CI checks for semantic commit messages and PR titles.
+Commit messages drive the release: `semantic-release` parses them to pick the
+next version, so the format is enforced in CI.
 
-Checks added:
+- Commitlint (commit messages, on push and PR): `.github/workflows/commitlint.yml`
+- Tests and release: `.github/workflows/ci.yml`
 
-- Commitlint (commit messages): `.github/workflows/commitlint.yml`
-- Semantic PR Title (PR title): `.github/workflows/semantic-pr.yml`
+Merge commits are ignored by commitlint's defaults.
 
 Conventional Commit examples:
 
