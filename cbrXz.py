@@ -172,29 +172,15 @@ def main(src, dst, root, replace, dryrun, log_level):
                             except rarfile.RarWarning as warning:
                                 logger.warning("Non-fatal error handling %s - some data loss likely.", book_f)
                                 logger.debug("rarfile warning: %s", warning)
-                            except rarfile.RarCRCError:
-                                logger.error("ERROR: corrupted archive: %s", book_f)
-                                logger.debug("----")
-                                continue
-                            except rarfile.BadRarFile:
-                                logger.error("ERROR: corrupted archive: %s", book_f)
-                                logger.debug("----")
-                                continue
                     except rarfile.NotRarFile:
                         logger.warning("Non-fatal error handling %s - actually a Zip.", book_f)
-                        if not os.path.isfile(f_book_z) or replace:
-                            logger.info("EVENT: copying %s to %s", book_f, f_book_z)
-                            if not dryrun:
-                                if os.path.isfile(f_book_z):
-                                    os.unlink(f_book_z)
-                                shutil.copy2(book, f_book_z)
+                        logger.info("EVENT: copying %s to %s", book_f, f_book_z)
+                        if os.path.isfile(f_book_z):
+                            os.unlink(f_book_z)
+                        shutil.copy2(book, f_book_z)
                         logger.debug("----")
                         continue
-                    except rarfile.RarCRCError:
-                        logger.error("ERROR: corrupted archive: %s", book_f)
-                        logger.debug("----")
-                        continue
-                    except rarfile.BadRarFile:
+                    except (rarfile.BadRarFile, rarfile.RarCRCError):
                         logger.error("ERROR: corrupted archive: %s", book_f)
                         logger.debug("----")
                         continue
