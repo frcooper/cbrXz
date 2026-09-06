@@ -198,10 +198,12 @@ def main(src, dst, root, replace, dryrun, log_level):
                         logger.error("ERROR: corrupted archive: %s", book_f)
                         logger.debug("----")
                         continue
-                    with tempfile.TemporaryDirectory() as tmp_b_dir:
-                        logger.debug("       tmp_b_dir: %s", tmp_b_dir)
-                        t_book_z = os.path.join(tmp_b_dir, book_z)
-                        logger.debug("        t_book_z: %s", t_book_z)
+
+                    # Build the archive next to its final location so publishing it is an
+                    # atomic rename instead of a second full-size copy out of a temp dir.
+                    t_book_z = "{}.part".format(f_book_z)
+                    logger.debug("        t_book_z: %s", t_book_z)
+                    try:
                         with zipfile.ZipFile(t_book_z, 'w', compression=zipfile.ZIP_STORED) as zip:
                             hasComicInfoXml = False
                             pages = []
@@ -227,11 +229,13 @@ def main(src, dst, root, replace, dryrun, log_level):
                                     continue
                                 logger.debug("          page_f: %s", page_f)
                                 zip.write(page, page_f)
-                            logger.info("EVENT: copying %s to %s", book_z, book_destination)
-                            if not dryrun:
-                                if os.path.isfile(f_book_z):
-                                    os.unlink(f_book_z)
-                                shutil.copy2(t_book_z, f_book_z)
+                        # The central directory is only written on close - publish after it.
+                        logger.info("EVENT: copying %s to %s", book_z, book_destination)
+                        os.replace(t_book_z, f_book_z)
+                    except BaseException:
+                        if os.path.isfile(t_book_z):
+                            os.unlink(t_book_z)
+                        raise
         else:
             # Determine destination filename: rename .zip -> .cbz and .7z -> .cb7
             if book_t == '.zip':
