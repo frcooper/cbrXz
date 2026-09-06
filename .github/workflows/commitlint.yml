@@ -1,6 +1,11 @@
 name: Commitlint
 
+# This repo releases straight from pushes to master, and semantic-release
+# parses those commit messages. Linting only on pull_request meant the release
+# pipeline's only input was never validated.
 on:
+  push:
+    branches: [ master ]
   pull_request:
     types: [opened, edited, synchronize, reopened]
 
