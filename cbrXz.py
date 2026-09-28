@@ -33,6 +33,10 @@ def filterBook(s: str) -> bool:
         return True
     if re.search(r"\(german\)", name, re.IGNORECASE):
         return True
+    if re.search(r"\[POR\]", name, re.IGNORECASE):
+        return True
+    if re.search(r"\(portuguese\)", name, re.IGNORECASE):
+        return True
     if re.search(r"scanlation", name, re.IGNORECASE):
         return True
     return False
