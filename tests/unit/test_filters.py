@@ -19,3 +19,14 @@ def test_filterpage_skips_mac_resource_paths():
 def test_filterpage_allows_normal_files():
     assert cbrXz.filterPage('pages/001.jpg') is False
     assert cbrXz.filterPage('ComicInfo.xml') is False
+
+
+def test_filterbook_skips_portuguese_tags():
+    assert cbrXz.filterBook('Book [POR].cbz') is True
+    assert cbrXz.filterBook('Book [por].cbz') is True
+    assert cbrXz.filterBook('Book (Portuguese).cbr') is True
+    assert cbrXz.filterBook('dir/Book (2020) (PORTUGUESE).zip') is True
+
+
+def test_filterbook_allows_untagged_portuguese_in_title():
+    assert cbrXz.filterBook('Portuguese Man.cbz') is False
