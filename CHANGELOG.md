@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v1.3.2 (2026-09-28)
+
+### Bug Fixes
+
+- **filters**: Skip books tagged (portuguese)
+  ([`588a7ab`](https://github.com/frcooper/cbrXz/commit/588a7ab341395654a8e4af26c1b25bbf9c6054f2))
+
+### Testing
+
+- **filters**: Cover Portuguese tags in filterBook
+  ([`5dd842e`](https://github.com/frcooper/cbrXz/commit/5dd842e4897c406b91151de8f360f9c3d1b71cd7))
+
+
 ## v1.3.1 (2026-09-06)
 
 ### Bug Fixes
