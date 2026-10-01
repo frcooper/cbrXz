@@ -177,7 +177,7 @@ def test_findcomicinfo_prefers_shallowest(tmp_path):
     assert cbrXz.findComicInfo([str(tmp_path / 'p.png')], str(tmp_path)) is None
 
 
-def test_append_adds_comicinfo_to_zip_without_one(tmp_path):
+def test_copy_appends_comicinfo_to_zip_without_one(tmp_path):
     entries_for(tmp_path, ['p00.png', 'p01.png'])
     z = tmp_path / 'book.cbz'
     with zipfile.ZipFile(z, 'w') as zf:
@@ -185,8 +185,9 @@ def test_append_adds_comicinfo_to_zip_without_one(tmp_path):
         zf.write(tmp_path / 'p01.png', 'p01.png')
         zf.writestr('Thumbs.db', b'junk')
     before = {i.filename: (i.CRC, i.header_offset) for i in zipfile.ZipFile(z).infolist()}
-    assert cbrXz.appendComicInfo(str(z), 'book.cbz') is True
-    with zipfile.ZipFile(z) as zf:
+    out = tmp_path / 'out.cbz'
+    cbrXz.copyZipBook(str(z), str(out), 'book.cbz')
+    with zipfile.ZipFile(out) as zf:
         assert zf.testzip() is None
         after = {i.filename: (i.CRC, i.header_offset) for i in zf.infolist()}
         root, els = pages_of(zf.read('ComicInfo.xml'))
@@ -194,23 +195,67 @@ def test_append_adds_comicinfo_to_zip_without_one(tmp_path):
     assert {k: v for k, v in after.items() if k != 'ComicInfo.xml'} == before
     assert root.findtext('PageCount') == '2'
     assert [el.get('ImageWidth') for el in els] == ['40', '40']
+    assert out.stat().st_mtime == z.stat().st_mtime
 
 
-def test_append_leaves_zip_with_comicinfo_alone(tmp_path):
+@pytest.mark.parametrize('compression', [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED])
+def test_copy_rewrites_zip_with_incomplete_comicinfo(tmp_path, compression):
     z = tmp_path / 'book.cbz'
-    with zipfile.ZipFile(z, 'w') as zf:
+    with zipfile.ZipFile(z, 'w', compression=compression) as zf:
         zf.write(make_png(tmp_path / 'p00.png'), 'p00.png')
-        zf.writestr('sub/ComicInfo.xml', '<ComicInfo/>')
-    data = z.read_bytes()
-    assert cbrXz.appendComicInfo(str(z), 'book.cbz') is False
-    assert z.read_bytes() == data
+        zf.write(make_png(tmp_path / 'p01.png'), 'p01.png')
+        zf.writestr('sub/ComicInfo.xml', '<ComicInfo><Title>T</Title></ComicInfo>')
+        zf.comment = b'kept'
+    out = tmp_path / 'out.cbz'
+    cbrXz.copyZipBook(str(z), str(out), 'book.cbz')
+    with zipfile.ZipFile(z) as zin, zipfile.ZipFile(out) as zout:
+        assert zout.testzip() is None
+        assert zout.comment == b'kept'
+        assert zout.namelist() == zin.namelist()
+        for a, b in zip(zin.infolist(), zout.infolist()):
+            assert a.date_time == b.date_time
+            assert b.compress_type == zipfile.ZIP_STORED
+            if a.filename != 'sub/ComicInfo.xml':
+                assert zout.read(b) == zin.read(a)
+        root, els = pages_of(zout.read('sub/ComicInfo.xml'))
+    assert root.findtext('Title') == 'T'
+    assert root.findtext('PageCount') == '2'
+    assert len(els) == 2
+    assert out.stat().st_mtime == z.stat().st_mtime
 
 
-def test_append_leaves_ambiguous_zip_alone(tmp_path):
+def test_copy_leaves_zip_with_complete_comicinfo_alone(tmp_path):
+    pages = entries_for(tmp_path, ['p00.png'])
     z = tmp_path / 'book.cbz'
     with zipfile.ZipFile(z, 'w') as zf:
-        for n in ['p1.png', 'p2.png', 'p10.png']:
+        zf.write(tmp_path / 'p00.png', 'p00.png')
+        zf.writestr('ComicInfo.xml', cbrXz.updateComicInfo(None, pages))
+    out = tmp_path / 'out.cbz'
+    cbrXz.copyZipBook(str(z), str(out), 'book.cbz')
+    assert out.read_bytes() == z.read_bytes()
+
+
+@pytest.mark.parametrize('names, comicinfo', [
+    (['p1.png', 'p2.png', 'p10.png'], None),               # ambiguous order
+    (['p00.png', 'p01.png'], '<ComicInfo><PageCount>9</PageCount></ComicInfo>'),  # contradicts
+    (['p00.png'], '<ComicInfo>'),                            # unparseable
+])
+def test_copy_leaves_unverifiable_zip_alone(tmp_path, names, comicinfo):
+    z = tmp_path / 'book.cbz'
+    with zipfile.ZipFile(z, 'w') as zf:
+        for n in names:
             zf.write(make_png(tmp_path / n), n)
-    data = z.read_bytes()
-    assert cbrXz.appendComicInfo(str(z), 'book.cbz') is False
-    assert z.read_bytes() == data
+        if comicinfo:
+            zf.writestr('ComicInfo.xml', comicinfo)
+    out = tmp_path / 'out.cbz'
+    cbrXz.copyZipBook(str(z), str(out), 'book.cbz')
+    assert out.read_bytes() == z.read_bytes()
+
+
+def test_copy_falls_back_when_not_a_zip(tmp_path):
+    z = tmp_path / 'book.cbz'
+    z.write_bytes(b'not a zip')
+    out = tmp_path / 'out.cbz'
+    cbrXz.copyZipBook(str(z), str(out), 'book.cbz')
+    assert out.read_bytes() == b'not a zip'
+    assert not (tmp_path / 'out.cbz.part').exists()

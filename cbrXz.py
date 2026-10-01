@@ -237,36 +237,76 @@ def updateComicInfo(xml, entries):
         ET.indent(root, space='  ')
     return ET.tostring(root, encoding='utf-8', xml_declaration=True)
 
-def appendComicInfo(path: str, book_f: str) -> bool:
-    """Append a ComicInfo.xml with page data to the zip at path when it has none.
-    The existing entries are not rewritten. Returns True if one was appended.
+def zipPageData(path: str, book_f: str) -> tuple:
+    """Work out the page data a zip book needs.
+    Returns (xml, name): the new ComicInfo.xml bytes (None if nothing should be
+    written) and the name of the archive's existing ComicInfo.xml (None if it has none).
     """
     try:
         with zipfile.ZipFile(path) as zf:
             infos = [i for i in zf.infolist() if not i.is_dir() and not filterPage(i.filename)]
-            if any(os.path.basename(i.filename).lower() == 'comicinfo.xml' for i in infos):
-                logger.debug("comicinfo exists.")
-                return False
-            xml = updateComicInfo(None, [zipEntry(zf, i) for i in infos])
+            found = [i.filename for i in infos if os.path.basename(i.filename).lower() == 'comicinfo.xml']
+            name = min(found, key=lambda n: (n.count('/'), n)) if found else None
+            existing = zf.read(name) if name else None
+            return updateComicInfo(existing, [zipEntry(zf, i) for i in infos]), name
     except zipfile.BadZipFile:
         logger.warning("Not writing page data for %s - not a valid zip.", book_f)
-        return False
+    except ET.ParseError as e:
+        logger.warning("Cannot parse ComicInfo.xml in %s - leaving it unchanged.", book_f)
+        logger.debug("parse error: %s", e)
     except PageDataError as e:
         logger.warning("Not writing page data for %s - %s.", book_f, e)
-        return False
-    logger.info("EVENT: appending page data to %s", book_f)
-    with zipfile.ZipFile(path, 'a', compression=zipfile.ZIP_STORED) as zf:
-        zf.writestr('ComicInfo.xml', xml)
-    return True
+    return None, None
+
+def rewriteZip(src: str, dst: str, name: str, data: bytes) -> None:
+    """Copy the zip at src to dst with the entry name's content replaced by data.
+    Entry order, names, timestamps and attributes are kept. Entries are stored,
+    as in repacked RARs: pages are already compressed images, and recompressing
+    them costs far more time than it saves space.
+    """
+    with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dst, 'w') as zout:
+        zout.comment = zin.comment
+        for info in zin.infolist():
+            out = zipfile.ZipInfo(info.filename, info.date_time)
+            out.external_attr = info.external_attr
+            out.create_system = info.create_system
+            out.comment = info.comment
+            if info.is_dir():
+                zout.writestr(out, b'')
+            elif info.filename == name:
+                zout.writestr(out, data)
+            else:
+                with zin.open(info) as fin, zout.open(out, 'w', force_zip64=info.file_size > 0x7fffffff) as fout:
+                    shutil.copyfileobj(fin, fout, 1 << 20)
 
 def copyZipBook(src: str, dst: str, book_f: str) -> None:
-    """Copy a zip book to dst, appending page data when it has no ComicInfo.xml.
-    Built next to dst and renamed into place so a partial file is never published.
+    """Copy a zip book to dst so it finishes with a ComicInfo.xml holding page data.
+    A missing ComicInfo.xml is appended without rewriting the existing entries; an
+    incomplete one means rewriting the archive. When no correct page data can be
+    written the book is copied byte-for-byte. Built next to dst and renamed into
+    place so a partial file is never published.
     """
+    xml, name = zipPageData(src, book_f)
     t_dst = "{}.part".format(dst)
     try:
-        shutil.copy2(src, t_dst)
-        appendComicInfo(t_dst, book_f)
+        if xml is None:
+            shutil.copy2(src, t_dst)
+        elif name is None:
+            logger.info("EVENT: appending page data to %s", book_f)
+            shutil.copy2(src, t_dst)
+            with zipfile.ZipFile(t_dst, 'a', compression=zipfile.ZIP_STORED) as zf:
+                zf.writestr('ComicInfo.xml', xml)
+            shutil.copystat(src, t_dst)
+        else:
+            logger.info("EVENT: rewriting %s with page data in %s", book_f, name)
+            try:
+                rewriteZip(src, t_dst, name, xml)
+                shutil.copystat(src, t_dst)
+            except Exception as e:  # pylint: disable=broad-except
+                # e.g. encrypted entries or a compression method zipfile cannot write
+                logger.warning("Not writing page data for %s - cannot rewrite archive.", book_f)
+                logger.debug("rewrite error: %s", e)
+                shutil.copy2(src, t_dst)
         os.replace(t_dst, dst)
     except BaseException:
         if os.path.isfile(t_dst):
