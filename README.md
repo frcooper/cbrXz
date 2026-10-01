@@ -64,14 +64,14 @@ python cbrXz.py SRC DST [options]
 - Repacked `.cbz` archives use stored (uncompressed) ZIP entries. Most comic pages are already compressed image formats (JPEG/PNG/WebP), so deflation adds CPU time with negligible size savings; the remaining text/XML is a tiny fraction of total size.
 - Repacked `.cbz` archives get page data in `ComicInfo.xml`. If the archive has no `ComicInfo.xml`, one is created; if it has one, only missing `PageCount`, `<Pages>`, `<Page>` entries and attributes are added — existing values are never overwritten. Each page (image files, in archive order) gets:
   - `ImageSize`, `ImageWidth`, `ImageHeight`, and `DoublePage="true"` for landscape pages (ComicInfo schema attributes)
-  - `ImageFormat` (e.g. `JPEG`, `PNG`), `ImageBitDepth` (bits per pixel), `ImageDpi` (`300`, or `300x72` when axes differ, when the image records it) and `ImageHash` (SHA‑256 hex) — extensions outside the ComicInfo schema
-  - Page data is only written when it is guaranteed to describe the right pages. Otherwise the archive is repacked with its `ComicInfo.xml` untouched and a warning is logged. Writing is skipped when:
+  - `ImageFormat` (e.g. `JPEG`, `PNG`), `ImageBitDepth` (bits per pixel), `ImageDpi` (`300`, or `300x72` when axes differ, when the image records it) — extensions outside the ComicInfo schema
+  - Page data is only written when it is guaranteed to describe the right pages. Otherwise the archive is written without it and a warning is logged. Writing is skipped when:
     - page file names sort differently in plain, case‑insensitive and natural order (e.g. `p1, p2, p10`), or two names have the same page number (`p1`, `p01`)
     - the archive contains images some readers skip (`.tif`, `.avif`, `.jxl`, `.heic`, `.jp2`)
     - any page image cannot be read
-    - an existing `PageCount` differs from the number of images, or an existing `<Page>` value (size, dimensions, format, depth, DPI, hash) differs from the image at that index
+    - an existing `PageCount` differs from the number of images, or an existing `<Page>` value (size, dimensions, format, depth, DPI) differs from the image at that index
     - existing `<Page>` entries are out of range or duplicated, or cannot be corroborated by a matching `PageCount` or a matching value
-- Copied (non‑RAR) archives are left byte‑for‑byte unchanged.
+- Copied `.cbz`/`.zip` archives without a `ComicInfo.xml` get one with page data appended (subject to the same checks). The existing entries are not rewritten, and only image headers are read, so this costs little more than the copy. Archives that already have a `ComicInfo.xml` are copied byte‑for‑byte, as are all other non‑RAR types.
 - Relative paths use `os.path.relpath` for robustness; zip arcnames use forward slashes.
 - Dry‑run skips file system writes but will still walk the tree and plan actions.
 

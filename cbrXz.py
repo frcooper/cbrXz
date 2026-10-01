@@ -1,7 +1,6 @@
 #! /usr/bin/python3
 
 import click
-import hashlib
 import logging
 import os
 import rarfile
@@ -48,7 +47,7 @@ ET.register_namespace('xsi', 'http://www.w3.org/2001/XMLSchema-instance')
 
 # <Page> attributes that can be checked against the image they describe
 INT_ATTRS = ['ImageSize', 'ImageWidth', 'ImageHeight', 'ImageBitDepth']
-STR_ATTRS = ['ImageFormat', 'ImageDpi', 'ImageHash']
+STR_ATTRS = ['ImageFormat', 'ImageDpi']
 
 
 class PageDataError(Exception):
@@ -96,18 +95,24 @@ def isPage(s: str) -> bool:
     """Return True if the path is an image that counts as a comic page."""
     return os.path.splitext(s)[1].lower() in IMAGE_TYPES
 
-def pageInfo(path: str) -> dict:
-    """Return ComicInfo <Page> attributes describing the image at path.
+def fileEntry(arcname: str, path: str) -> tuple:
+    """Describe a file on disk as an archive entry: (arcname, size, opener)."""
+    return (arcname, os.path.getsize(path), lambda: open(path, 'rb'))
+
+def zipEntry(zf: zipfile.ZipFile, info: zipfile.ZipInfo) -> tuple:
+    """Describe a member of an open zip as an archive entry: (arcname, size, opener)."""
+    return (info.filename, info.file_size, lambda: zf.open(info))
+
+def pageInfo(entry: tuple) -> dict:
+    """Return ComicInfo <Page> attributes describing the image in entry.
+    Only the image header is read.
     ImageSize/ImageWidth/ImageHeight/DoublePage are ComicInfo schema attributes;
-    ImageFormat/ImageBitDepth/ImageDpi/ImageHash are extensions.
+    ImageFormat/ImageBitDepth/ImageDpi are extensions.
     """
-    sha = hashlib.sha256()
-    with open(path, 'rb') as f:
-        for chunk in iter(lambda: f.read(1 << 20), b''):
-            sha.update(chunk)
-    info = {'ImageSize': str(os.path.getsize(path))}
+    name, size, opener = entry
+    info = {'ImageSize': str(size)}
     try:
-        with Image.open(path) as im:
+        with opener() as f, Image.open(f) as im:
             width, height = im.size
             info['ImageWidth'] = str(width)
             info['ImageHeight'] = str(height)
@@ -123,8 +128,7 @@ def pageInfo(path: str) -> dict:
                 if x > 0 and y > 0:
                     info['ImageDpi'] = str(x) if x == y else f"{x}x{y}"
     except Exception as e:  # pylint: disable=broad-except
-        raise PageDataError(f"cannot read image {os.path.basename(path)}: {e}") from e
-    info['ImageHash'] = sha.hexdigest()
+        raise PageDataError(f"cannot read image {name}: {e}") from e
     return info
 
 def naturalKey(s: str) -> list:
@@ -132,17 +136,19 @@ def naturalKey(s: str) -> list:
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r'(\d+)', s)]
 
 def pageOrder(entries) -> list:
-    """Return the page images among entries [(arcname, path)] in reading order.
+    """Return the page images among entries [(arcname, size, opener)] in reading order.
     Raises PageDataError unless every common ordering (plain, case-insensitive,
     natural) agrees, so a page index means the same image in any reader.
     """
-    uncertain = [n for n, _ in entries if os.path.splitext(n)[1].lower() in UNCERTAIN_IMAGE_TYPES]
+    uncertain = [e[0] for e in entries if os.path.splitext(e[0])[1].lower() in UNCERTAIN_IMAGE_TYPES]
     if uncertain:
         raise PageDataError(f"readers disagree on whether {uncertain[0]} is a page")
-    pages = sorted((n, p) for n, p in entries if isPage(n))
+    pages = sorted((e for e in entries if isPage(e[0])), key=lambda e: e[0])
     if not pages:
         raise PageDataError("no page images")
-    names = [n for n, _ in pages]
+    names = [e[0] for e in pages]
+    if len(set(names)) != len(names):
+        raise PageDataError("archive has duplicate page names")
     if len({tuple(naturalKey(n)) for n in names}) != len(names):
         raise PageDataError("page names collide in natural order")
     if sorted(names, key=naturalKey) != names or sorted(names, key=str.lower) != names:
@@ -170,7 +176,7 @@ def checkPage(el, info: dict) -> bool:
 def updateComicInfo(xml, entries):
     """Fill in missing page data in a ComicInfo.xml document.
     xml is the existing document as bytes, or None to create one.
-    entries is [(arcname, path)] for every file in the archive.
+    entries is [(arcname, size, opener)] for every file in the archive.
     Existing values are never overwritten. Returns the new document as
     bytes, or None if nothing needed to change. Raises PageDataError if the
     data cannot be guaranteed to land on the right pages.
@@ -178,7 +184,7 @@ def updateComicInfo(xml, entries):
     root = ET.Element('ComicInfo') if xml is None else ET.fromstring(xml)
     changed = xml is None
     pages = pageOrder(entries)
-    infos = [pageInfo(p) for _, p in pages]
+    infos = [pageInfo(e) for e in pages]
 
     count_el = root.find('PageCount')
     if count_el is not None:
@@ -230,6 +236,42 @@ def updateComicInfo(xml, entries):
     if hasattr(ET, 'indent'):
         ET.indent(root, space='  ')
     return ET.tostring(root, encoding='utf-8', xml_declaration=True)
+
+def appendComicInfo(path: str, book_f: str) -> bool:
+    """Append a ComicInfo.xml with page data to the zip at path when it has none.
+    The existing entries are not rewritten. Returns True if one was appended.
+    """
+    try:
+        with zipfile.ZipFile(path) as zf:
+            infos = [i for i in zf.infolist() if not i.is_dir() and not filterPage(i.filename)]
+            if any(os.path.basename(i.filename).lower() == 'comicinfo.xml' for i in infos):
+                logger.debug("comicinfo exists.")
+                return False
+            xml = updateComicInfo(None, [zipEntry(zf, i) for i in infos])
+    except zipfile.BadZipFile:
+        logger.warning("Not writing page data for %s - not a valid zip.", book_f)
+        return False
+    except PageDataError as e:
+        logger.warning("Not writing page data for %s - %s.", book_f, e)
+        return False
+    logger.info("EVENT: appending page data to %s", book_f)
+    with zipfile.ZipFile(path, 'a', compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr('ComicInfo.xml', xml)
+    return True
+
+def copyZipBook(src: str, dst: str, book_f: str) -> None:
+    """Copy a zip book to dst, appending page data when it has no ComicInfo.xml.
+    Built next to dst and renamed into place so a partial file is never published.
+    """
+    t_dst = "{}.part".format(dst)
+    try:
+        shutil.copy2(src, t_dst)
+        appendComicInfo(t_dst, book_f)
+        os.replace(t_dst, dst)
+    except BaseException:
+        if os.path.isfile(t_dst):
+            os.unlink(t_dst)
+        raise
 
 def findComicInfo(paths, start):
     """Return the shallowest ComicInfo.xml (case-insensitive) among paths, or None."""
@@ -364,9 +406,7 @@ def main(src, dst, root, replace, dryrun, log_level):
                     except rarfile.NotRarFile:
                         logger.warning("Non-fatal error handling %s - actually a Zip.", book_f)
                         logger.info("EVENT: copying %s to %s", book_f, f_book_z)
-                        if os.path.isfile(f_book_z):
-                            os.unlink(f_book_z)
-                        shutil.copy2(book, f_book_z)
+                        copyZipBook(book, f_book_z, book_f)
                         logger.debug("----")
                         continue
                     except (rarfile.BadRarFile, rarfile.RarCRCError):
@@ -399,7 +439,7 @@ def main(src, dst, root, replace, dryrun, log_level):
                                 logger.debug("comicinfo exists.")
                                 with open(comicinfo, 'rb') as f:
                                     xml = f.read()
-                            entries = [(os.path.relpath(p, start=tmp_x_dir).replace(os.sep, '/'), p) for p in pages]
+                            entries = [fileEntry(os.path.relpath(p, start=tmp_x_dir).replace(os.sep, '/'), p) for p in pages]
                             try:
                                 xml = updateComicInfo(xml, entries)
                             except ET.ParseError as e:
@@ -444,9 +484,13 @@ def main(src, dst, root, replace, dryrun, log_level):
                 logger.info("EVENT: copying %s to %s", book_f, book_destination_f)
                 if not dryrun:
                     if os.path.isfile(book_destination_f):
-                        logger.info("EVENT: %s already exists - removing...", book_destination_f)
-                        os.unlink(book_destination_f)
-                    shutil.copy2(book, book_destination_f)
+                        logger.info("EVENT: %s already exists - replacing...", book_destination_f)
+                    if book_t in ['.cbz', '.zip']:
+                        copyZipBook(book, book_destination_f, book_f)
+                    else:
+                        if os.path.isfile(book_destination_f):
+                            os.unlink(book_destination_f)
+                        shutil.copy2(book, book_destination_f)
             logger.debug("----")
             continue
         logger.debug("----")

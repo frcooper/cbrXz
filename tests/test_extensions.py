@@ -1,4 +1,3 @@
-import hashlib
 import os
 import subprocess
 import sys
@@ -118,11 +117,11 @@ def test_fixture_rar_like_results(tmp_path: Path, ext: str):
                     root = ET.fromstring(xml)
                     assert int(root.findtext("PageCount")) != len(images)
                 else:
-                    # Written: every page's hash must match the image at that index
+                    # Written: every page's size must match the image at that index
                     pages = ET.fromstring(xml).find("Pages").findall("Page")
                     for page in pages:
-                        data = zf.read(images[int(page.get("Image"))])
-                        assert page.get("ImageHash") == hashlib.sha256(data).hexdigest()
+                        info = zf.getinfo(images[int(page.get("Image"))])
+                        assert int(page.get("ImageSize")) == info.file_size
         else:
             # Not a real RAR: script copies bytes into .cbz unchanged via NotRarFile path
             assert out.read_bytes() == local.read_bytes(), f"Expected raw copy for {rar_path.name}"

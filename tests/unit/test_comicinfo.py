@@ -1,6 +1,6 @@
 from pathlib import Path
-import hashlib
 import sys
+import zipfile
 import xml.etree.ElementTree as ET
 
 import pytest
@@ -28,7 +28,7 @@ def entries_for(tmp_path, names):
         p = tmp_path / n
         p.parent.mkdir(parents=True, exist_ok=True)
         make_png(p)
-        out.append((n, str(p)))
+        out.append(cbrXz.fileEntry(n, str(p)))
     return out
 
 
@@ -39,20 +39,19 @@ def pages_of(xml: bytes):
 
 def test_pageinfo_reports_image_data(tmp_path):
     p = make_png(tmp_path / 'p01.png')
-    info = cbrXz.pageInfo(str(p))
+    info = cbrXz.pageInfo(cbrXz.fileEntry('p01.png', str(p)))
     assert info['ImageSize'] == str(p.stat().st_size)
     assert info['ImageWidth'] == '40'
     assert info['ImageHeight'] == '60'
     assert info['ImageFormat'] == 'PNG'
     assert info['ImageBitDepth'] == '24'
     assert info['ImageDpi'] == '300'
-    assert info['ImageHash'] == hashlib.sha256(p.read_bytes()).hexdigest()
     assert 'DoublePage' not in info
 
 
 def test_pageinfo_flags_landscape_as_double_page(tmp_path):
     p = make_jpeg(tmp_path / 'spread.jpg')
-    info = cbrXz.pageInfo(str(p))
+    info = cbrXz.pageInfo(cbrXz.fileEntry('spread.jpg', str(p)))
     assert info['DoublePage'] == 'true'
     assert info['ImageFormat'] == 'JPEG'
     assert info['ImageBitDepth'] == '8'
@@ -62,7 +61,7 @@ def test_unreadable_image_blocks_page_data(tmp_path):
     p = tmp_path / 'broken.jpg'
     p.write_bytes(b'not an image')
     with pytest.raises(cbrXz.PageDataError):
-        cbrXz.updateComicInfo(None, [('broken.jpg', str(p))])
+        cbrXz.updateComicInfo(None, [cbrXz.fileEntry('broken.jpg', str(p))])
 
 
 def test_creates_comicinfo_when_missing(tmp_path):
@@ -72,14 +71,15 @@ def test_creates_comicinfo_when_missing(tmp_path):
     assert root.tag == 'ComicInfo'
     assert root.findtext('PageCount') == '3'
     assert [el.get('Image') for el in els] == ['0', '1', '2']
-    hashes = [hashlib.sha256((tmp_path / f'p0{i}.png').read_bytes()).hexdigest() for i in range(3)]
-    assert [el.get('ImageHash') for el in els] == hashes
+    sizes = [str((tmp_path / f'p0{i}.png').stat().st_size) for i in range(3)]
+    assert [el.get('ImageSize') for el in els] == sizes
+    assert all(el.get('ImageHash') is None for el in els)
 
 
 def test_ignores_non_image_files(tmp_path):
     entries = entries_for(tmp_path, ['p00.png'])
     (tmp_path / 'ComicInfo.xml').write_text('<ComicInfo/>')
-    entries.append(('ComicInfo.xml', str(tmp_path / 'ComicInfo.xml')))
+    entries.append(cbrXz.fileEntry('ComicInfo.xml', str(tmp_path / 'ComicInfo.xml')))
     root, els = pages_of(cbrXz.updateComicInfo(None, entries))
     assert root.findtext('PageCount') == '1'
 
@@ -143,7 +143,7 @@ def test_padded_names_are_unambiguous(tmp_path):
 def test_uncertain_image_type_blocks_page_data(tmp_path):
     entries = entries_for(tmp_path, ['p00.png'])
     (tmp_path / 'p01.avif').write_bytes(b'x')
-    entries.append(('p01.avif', str(tmp_path / 'p01.avif')))
+    entries.append(cbrXz.fileEntry('p01.avif', str(tmp_path / 'p01.avif')))
     with pytest.raises(cbrXz.PageDataError):
         cbrXz.updateComicInfo(None, entries)
 
@@ -154,7 +154,7 @@ def test_uncertain_image_type_blocks_page_data(tmp_path):
     '<Pages><Page Image="0" Type="FrontCover" /></Pages>',              # nothing to corroborate
     '<PageCount>2</PageCount><Pages><Page Image="2" /></Pages>',        # out of range
     '<PageCount>2</PageCount><Pages><Page Image="0" /><Page Image="0" /></Pages>',  # duplicate
-    '<PageCount>2</PageCount><Pages><Page Image="0" ImageHash="abc" /></Pages>',    # wrong hash
+    '<PageCount>2</PageCount><Pages><Page Image="0" ImageFormat="JPEG" /></Pages>',  # wrong format
 ])
 def test_contradicting_comicinfo_blocks_page_data(tmp_path, body):
     entries = entries_for(tmp_path, ['p00.png', 'p01.png'])
@@ -167,7 +167,7 @@ def test_matching_pagecount_corroborates_bare_entries(tmp_path):
     existing = b'<ComicInfo><PageCount>2</PageCount><Pages><Page Image="0" Type="FrontCover" /></Pages></ComicInfo>'
     _, els = pages_of(cbrXz.updateComicInfo(existing, entries))
     assert els[0].get('Type') == 'FrontCover'
-    assert els[0].get('ImageHash')
+    assert els[0].get('ImageWidth') == '40'
 
 
 def test_findcomicinfo_prefers_shallowest(tmp_path):
@@ -175,3 +175,42 @@ def test_findcomicinfo_prefers_shallowest(tmp_path):
     b = str(tmp_path / 'comicinfo.XML')
     assert cbrXz.findComicInfo([a, b], str(tmp_path)) == b
     assert cbrXz.findComicInfo([str(tmp_path / 'p.png')], str(tmp_path)) is None
+
+
+def test_append_adds_comicinfo_to_zip_without_one(tmp_path):
+    entries_for(tmp_path, ['p00.png', 'p01.png'])
+    z = tmp_path / 'book.cbz'
+    with zipfile.ZipFile(z, 'w') as zf:
+        zf.write(tmp_path / 'p00.png', 'p00.png')
+        zf.write(tmp_path / 'p01.png', 'p01.png')
+        zf.writestr('Thumbs.db', b'junk')
+    before = {i.filename: (i.CRC, i.header_offset) for i in zipfile.ZipFile(z).infolist()}
+    assert cbrXz.appendComicInfo(str(z), 'book.cbz') is True
+    with zipfile.ZipFile(z) as zf:
+        assert zf.testzip() is None
+        after = {i.filename: (i.CRC, i.header_offset) for i in zf.infolist()}
+        root, els = pages_of(zf.read('ComicInfo.xml'))
+    # Existing entries were left where they were - only ComicInfo.xml was added
+    assert {k: v for k, v in after.items() if k != 'ComicInfo.xml'} == before
+    assert root.findtext('PageCount') == '2'
+    assert [el.get('ImageWidth') for el in els] == ['40', '40']
+
+
+def test_append_leaves_zip_with_comicinfo_alone(tmp_path):
+    z = tmp_path / 'book.cbz'
+    with zipfile.ZipFile(z, 'w') as zf:
+        zf.write(make_png(tmp_path / 'p00.png'), 'p00.png')
+        zf.writestr('sub/ComicInfo.xml', '<ComicInfo/>')
+    data = z.read_bytes()
+    assert cbrXz.appendComicInfo(str(z), 'book.cbz') is False
+    assert z.read_bytes() == data
+
+
+def test_append_leaves_ambiguous_zip_alone(tmp_path):
+    z = tmp_path / 'book.cbz'
+    with zipfile.ZipFile(z, 'w') as zf:
+        for n in ['p1.png', 'p2.png', 'p10.png']:
+            zf.write(make_png(tmp_path / n), n)
+    data = z.read_bytes()
+    assert cbrXz.appendComicInfo(str(z), 'book.cbz') is False
+    assert z.read_bytes() == data
