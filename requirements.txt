@@ -1,3 +1,5 @@
 pytest>=8.0
 rarfile>=4.0
 click>=8.0
+Pillow>=9.0
+py7zr>=0.20.2

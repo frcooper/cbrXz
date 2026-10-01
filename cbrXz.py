@@ -3,19 +3,58 @@
 import click
 import logging
 import os
+import py7zr
 import rarfile
 import shutil
 import tempfile
 import zipfile
 import re
+import xml.etree.ElementTree as ET
 from importlib import metadata as _metadata
 
+from PIL import Image
 
 
 # moved logging configuration into main; keep module-level logger
 logger = logging.getLogger(__name__)
 
 BOOK_TYPES = ['.cbr', '.rar', '.cbz', '.zip', '.cb7', '.7z', '.pdf', '.epub']
+# Books extracted and repacked as .cbz
+REPACK_TYPES = ['.cbr', '.rar', '.cb7', '.7z']
+IMAGE_TYPES = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']
+# Images some readers show as pages and others skip - page numbering is ambiguous when present
+UNCERTAIN_IMAGE_TYPES = ['.tif', '.tiff', '.avif', '.jxl', '.heic', '.heif', '.jp2']
+
+# Bits per pixel for Pillow image modes
+MODE_BITS = {
+    '1': 1, 'L': 8, 'P': 8, 'LA': 16, 'PA': 16, 'La': 16,
+    'RGB': 24, 'YCbCr': 24, 'LAB': 24, 'HSV': 24,
+    'RGBA': 32, 'RGBa': 32, 'RGBX': 32, 'CMYK': 32,
+    'I;16': 16, 'I;16L': 16, 'I;16B': 16, 'I;16N': 16, 'I': 32, 'F': 32,
+}
+
+# ComicInfo elements that follow <Pages> in the schema sequence
+AFTER_PAGES = ['CommunityRating', 'MainCharacterOrItem', 'Review', 'GTIN']
+# ComicInfo elements that follow <PageCount> in the schema sequence
+AFTER_PAGECOUNT = ['LanguageISO', 'Format', 'BlackAndWhite', 'Manga', 'Characters', 'Teams',
+                   'Locations', 'ScanInformation', 'StoryArc', 'StoryArcNumber', 'SeriesGroup',
+                   'AgeRating', 'Pages'] + AFTER_PAGES
+
+def insertBefore(root, el, following):
+    """Insert el before the first child of root whose tag is in following, else append."""
+    after = [i for i, child in enumerate(root) if child.tag in following]
+    root.insert(after[0] if after else len(root), el)
+
+ET.register_namespace('xsd', 'http://www.w3.org/2001/XMLSchema')
+ET.register_namespace('xsi', 'http://www.w3.org/2001/XMLSchema-instance')
+
+# <Page> attributes that can be checked against the image they describe
+INT_ATTRS = ['ImageSize', 'ImageWidth', 'ImageHeight', 'ImageBitDepth']
+STR_ATTRS = ['ImageFormat', 'ImageDpi']
+
+
+class PageDataError(Exception):
+    """Page data cannot be guaranteed to describe the right pages."""
 
 def get_version() -> str:
     """Return the project version from installed package metadata.
@@ -54,6 +93,284 @@ def filterPage(s: str) -> bool:
     if sp.startswith('__MACOSX/') or '/__MACOSX/' in sp:
         return True
     return False
+
+def isPage(s: str) -> bool:
+    """Return True if the path is an image that counts as a comic page."""
+    return os.path.splitext(s)[1].lower() in IMAGE_TYPES
+
+def fileEntry(arcname: str, path: str) -> tuple:
+    """Describe a file on disk as an archive entry: (arcname, size, opener)."""
+    return (arcname, os.path.getsize(path), lambda: open(path, 'rb'))
+
+def zipEntry(zf: zipfile.ZipFile, info: zipfile.ZipInfo) -> tuple:
+    """Describe a member of an open zip as an archive entry: (arcname, size, opener)."""
+    return (info.filename, info.file_size, lambda: zf.open(info))
+
+def pageInfo(entry: tuple) -> dict:
+    """Return ComicInfo <Page> attributes describing the image in entry.
+    Only the image header is read.
+    ImageSize/ImageWidth/ImageHeight/DoublePage are ComicInfo schema attributes;
+    ImageFormat/ImageBitDepth/ImageDpi are extensions.
+    """
+    name, size, opener = entry
+    info = {'ImageSize': str(size)}
+    try:
+        with opener() as f, Image.open(f) as im:
+            width, height = im.size
+            info['ImageWidth'] = str(width)
+            info['ImageHeight'] = str(height)
+            if width > height:
+                info['DoublePage'] = 'true'
+            if im.format:
+                info['ImageFormat'] = im.format
+            if im.mode in MODE_BITS:
+                info['ImageBitDepth'] = str(MODE_BITS[im.mode])
+            dpi = im.info.get('dpi')
+            if dpi:
+                x, y = (round(float(d)) for d in dpi)
+                if x > 0 and y > 0:
+                    info['ImageDpi'] = str(x) if x == y else f"{x}x{y}"
+    except Exception as e:  # pylint: disable=broad-except
+        raise PageDataError(f"cannot read image {name}: {e}") from e
+    return info
+
+def naturalKey(s: str) -> list:
+    """Sort key matching how comic readers order page names (case-insensitive, numbers by value)."""
+    return [int(t) if t.isdigit() else t.lower() for t in re.split(r'(\d+)', s)]
+
+def pageOrder(entries) -> list:
+    """Return the page images among entries [(arcname, size, opener)] in reading order.
+    Raises PageDataError unless every common ordering (plain, case-insensitive,
+    natural) agrees, so a page index means the same image in any reader.
+    """
+    uncertain = [e[0] for e in entries if os.path.splitext(e[0])[1].lower() in UNCERTAIN_IMAGE_TYPES]
+    if uncertain:
+        raise PageDataError(f"readers disagree on whether {uncertain[0]} is a page")
+    pages = sorted((e for e in entries if isPage(e[0])), key=lambda e: e[0])
+    if not pages:
+        raise PageDataError("no page images")
+    names = [e[0] for e in pages]
+    if len(set(names)) != len(names):
+        raise PageDataError("archive has duplicate page names")
+    if len({tuple(naturalKey(n)) for n in names}) != len(names):
+        raise PageDataError("page names collide in natural order")
+    if sorted(names, key=naturalKey) != names or sorted(names, key=str.lower) != names:
+        raise PageDataError("page names sort differently in plain and natural order")
+    return pages
+
+def checkPage(el, info: dict) -> bool:
+    """Compare an existing <Page> to the image it claims to describe.
+    Raises PageDataError on any mismatch; returns True if anything matched.
+    """
+    matched = False
+    for k in INT_ATTRS + STR_ATTRS:
+        v = el.get(k)
+        if v is None or k not in info:
+            continue
+        try:
+            same = int(v) == int(info[k]) if k in INT_ATTRS else v.strip().lower() == info[k].lower()
+        except ValueError:
+            same = False
+        if not same:
+            raise PageDataError(f"page {el.get('Image')} has {k}={v}, image has {info[k]}")
+        matched = True
+    return matched
+
+def updateComicInfo(xml, entries):
+    """Fill in missing page data in a ComicInfo.xml document.
+    xml is the existing document as bytes, or None to create one.
+    entries is [(arcname, size, opener)] for every file in the archive.
+    Existing values are never overwritten. Returns the new document as
+    bytes, or None if nothing needed to change. Raises PageDataError if the
+    data cannot be guaranteed to land on the right pages.
+    """
+    root = ET.Element('ComicInfo') if xml is None else ET.fromstring(xml)
+    changed = xml is None
+    pages = pageOrder(entries)
+    infos = [pageInfo(e) for e in pages]
+
+    count_el = root.find('PageCount')
+    if count_el is not None:
+        try:
+            count = int((count_el.text or '').strip())
+        except ValueError:
+            raise PageDataError(f"PageCount is {count_el.text!r}")
+        if count != len(pages):
+            raise PageDataError(f"PageCount is {count}, archive has {len(pages)} pages")
+
+    pages_el = root.find('Pages')
+    by_index = {}
+    corroborated = count_el is not None
+    for el in [] if pages_el is None else pages_el.findall('Page'):
+        try:
+            i = int(el.get('Image', ''))
+        except ValueError:
+            raise PageDataError(f"page entry has Image={el.get('Image')!r}")
+        if i in by_index or not 0 <= i < len(pages):
+            raise PageDataError(f"page entry Image={i} is duplicated or out of range")
+        by_index[i] = el
+        corroborated = checkPage(el, infos[i]) or corroborated
+    if by_index and not corroborated:
+        raise PageDataError("existing page entries cannot be matched to images")
+
+    if pages_el is None:
+        pages_el = ET.Element('Pages')
+        insertBefore(root, pages_el, AFTER_PAGES)
+        changed = True
+
+    if count_el is None:
+        count_el = ET.Element('PageCount')
+        count_el.text = str(len(pages))
+        insertBefore(root, count_el, AFTER_PAGECOUNT)
+        changed = True
+
+    for i, info in enumerate(infos):
+        el = by_index.get(i)
+        if el is None:
+            el = ET.SubElement(pages_el, 'Page', {'Image': str(i)})
+            changed = True
+        for k, v in info.items():
+            if el.get(k) is None:
+                el.set(k, v)
+                changed = True
+
+    if not changed:
+        return None
+    if hasattr(ET, 'indent'):
+        ET.indent(root, space='  ')
+    return ET.tostring(root, encoding='utf-8', xml_declaration=True)
+
+def zipPageData(path: str, book_f: str) -> tuple:
+    """Work out the page data a zip book needs.
+    Returns (xml, name): the new ComicInfo.xml bytes (None if nothing should be
+    written) and the name of the archive's existing ComicInfo.xml (None if it has none).
+    """
+    try:
+        with zipfile.ZipFile(path) as zf:
+            infos = [i for i in zf.infolist() if not i.is_dir() and not filterPage(i.filename)]
+            found = [i.filename for i in infos if os.path.basename(i.filename).lower() == 'comicinfo.xml']
+            name = min(found, key=lambda n: (n.count('/'), n)) if found else None
+            existing = zf.read(name) if name else None
+            return updateComicInfo(existing, [zipEntry(zf, i) for i in infos]), name
+    except zipfile.BadZipFile:
+        logger.warning("Not writing page data for %s - not a valid zip.", book_f)
+    except ET.ParseError as e:
+        logger.warning("Cannot parse ComicInfo.xml in %s - leaving it unchanged.", book_f)
+        logger.debug("parse error: %s", e)
+    except PageDataError as e:
+        logger.warning("Not writing page data for %s - %s.", book_f, e)
+    return None, None
+
+def rewriteZip(src: str, dst: str, name: str, data: bytes) -> None:
+    """Copy the zip at src to dst with the entry name's content replaced by data.
+    Entry order, names, timestamps and attributes are kept. Entries are stored,
+    as in repacked RARs: pages are already compressed images, and recompressing
+    them costs far more time than it saves space.
+    """
+    with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dst, 'w') as zout:
+        zout.comment = zin.comment
+        for info in zin.infolist():
+            out = zipfile.ZipInfo(info.filename, info.date_time)
+            out.external_attr = info.external_attr
+            out.create_system = info.create_system
+            out.comment = info.comment
+            if info.is_dir():
+                zout.writestr(out, b'')
+            elif info.filename == name:
+                zout.writestr(out, data)
+            else:
+                with zin.open(info) as fin, zout.open(out, 'w', force_zip64=info.file_size > 0x7fffffff) as fout:
+                    shutil.copyfileobj(fin, fout, 1 << 20)
+
+def copyZipBook(src: str, dst: str, book_f: str) -> None:
+    """Copy a zip book to dst so it finishes with a ComicInfo.xml holding page data.
+    A missing ComicInfo.xml is appended without rewriting the existing entries; an
+    incomplete one means rewriting the archive. When no correct page data can be
+    written the book is copied byte-for-byte. Built next to dst and renamed into
+    place so a partial file is never published.
+    """
+    xml, name = zipPageData(src, book_f)
+    t_dst = "{}.part".format(dst)
+    try:
+        if xml is None:
+            shutil.copy2(src, t_dst)
+        elif name is None:
+            logger.info("EVENT: appending page data to %s", book_f)
+            shutil.copy2(src, t_dst)
+            with zipfile.ZipFile(t_dst, 'a', compression=zipfile.ZIP_STORED) as zf:
+                zf.writestr('ComicInfo.xml', xml)
+            shutil.copystat(src, t_dst)
+        else:
+            logger.info("EVENT: rewriting %s with page data in %s", book_f, name)
+            try:
+                rewriteZip(src, t_dst, name, xml)
+                shutil.copystat(src, t_dst)
+            except Exception as e:  # pylint: disable=broad-except
+                # e.g. encrypted entries or a compression method zipfile cannot write
+                logger.warning("Not writing page data for %s - cannot rewrite archive.", book_f)
+                logger.debug("rewrite error: %s", e)
+                shutil.copy2(src, t_dst)
+        os.replace(t_dst, dst)
+    except BaseException:
+        if os.path.isfile(t_dst):
+            os.unlink(t_dst)
+        raise
+
+def extractBook(book: str, book_t: str, out_dir: str, book_f: str) -> str:
+    """Extract a RAR or 7z book into out_dir.
+    Returns 'ok' when extracted, 'zip' when the book is really a zip, 'keep' when
+    it cannot be extracted but should still be copied unchanged (encrypted,
+    unsupported compression, not a 7z at all), or 'bad' when it is corrupt.
+    """
+    if book_t in ['.cb7', '.7z']:
+        try:
+            with py7zr.SevenZipFile(book) as sz:
+                if sz.needs_password():
+                    logger.warning("Non-fatal error handling %s - encrypted, keeping it as 7z.", book_f)
+                    return 'keep'
+                logger.info("EVENT: extracting %s to %s", book_f, out_dir)
+                sz.extractall(out_dir)
+        except py7zr.exceptions.PasswordRequired:
+            logger.warning("Non-fatal error handling %s - encrypted, keeping it as 7z.", book_f)
+            return 'keep'
+        except py7zr.exceptions.UnsupportedCompressionMethodError as e:
+            logger.warning("Non-fatal error handling %s - unsupported compression, keeping it as 7z.", book_f)
+            logger.debug("py7zr error: %s", e)
+            return 'keep'
+        except py7zr.exceptions.Bad7zFile:
+            if zipfile.is_zipfile(book):
+                logger.warning("Non-fatal error handling %s - actually a Zip.", book_f)
+                return 'zip'
+            logger.warning("Non-fatal error handling %s - not a 7z archive, copying it unchanged.", book_f)
+            return 'keep'
+        except (py7zr.exceptions.ArchiveError, py7zr.exceptions.CrcError,
+                py7zr.exceptions.DecompressionError, py7zr.exceptions.AbsolutePathError) as e:
+            logger.error("ERROR: corrupted archive: %s", book_f)
+            logger.debug("py7zr error: %s", e)
+            return 'bad'
+        return 'ok'
+    try:
+        with rarfile.RarFile(book) as rar:
+            logger.info("EVENT: extracting %s to %s", book_f, out_dir)
+            try:
+                rar.extractall(out_dir)
+            except rarfile.RarWarning as warning:
+                logger.warning("Non-fatal error handling %s - some data loss likely.", book_f)
+                logger.debug("rarfile warning: %s", warning)
+    except rarfile.NotRarFile:
+        logger.warning("Non-fatal error handling %s - actually a Zip.", book_f)
+        return 'zip'
+    except (rarfile.BadRarFile, rarfile.RarCRCError):
+        logger.error("ERROR: corrupted archive: %s", book_f)
+        return 'bad'
+    return 'ok'
+
+def findComicInfo(paths, start):
+    """Return the shallowest ComicInfo.xml (case-insensitive) among paths, or None."""
+    found = [p for p in paths if os.path.basename(p).lower() == 'comicinfo.xml']
+    if not found:
+        return None
+    return min(found, key=lambda p: (os.path.relpath(p, start=start).count(os.sep), p))
 
 
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
@@ -158,7 +475,7 @@ def main(src, dst, root, replace, dryrun, log_level):
             if not dryrun:
                 os.makedirs(book_destination)
 
-        if book_t in ['.cbr', '.rar']:
+        if book_t in REPACK_TYPES:
             book_z = "{}.cbz".format(book_b)
             logger.debug("          book_z: %s", book_z)
             f_book_z = os.path.join(book_destination, book_z)
@@ -170,24 +487,17 @@ def main(src, dst, root, replace, dryrun, log_level):
                     continue
                 with tempfile.TemporaryDirectory() as tmp_x_dir:
                     logger.debug("       tmp_x_dir: %s", tmp_x_dir)
-                    try:
-                        with rarfile.RarFile(book) as rar:
-                            logger.info("EVENT: extracting %s to %s", book_f, tmp_x_dir)
-                            try:
-                                rar.extractall(tmp_x_dir)
-                            except rarfile.RarWarning as warning:
-                                logger.warning("Non-fatal error handling %s - some data loss likely.", book_f)
-                                logger.debug("rarfile warning: %s", warning)
-                    except rarfile.NotRarFile:
-                        logger.warning("Non-fatal error handling %s - actually a Zip.", book_f)
+                    status = extractBook(book, book_t, tmp_x_dir, book_f)
+                    if status == 'zip':
                         logger.info("EVENT: copying %s to %s", book_f, f_book_z)
-                        if os.path.isfile(f_book_z):
-                            os.unlink(f_book_z)
-                        shutil.copy2(book, f_book_z)
-                        logger.debug("----")
-                        continue
-                    except (rarfile.BadRarFile, rarfile.RarCRCError):
-                        logger.error("ERROR: corrupted archive: %s", book_f)
+                        copyZipBook(book, f_book_z, book_f)
+                    elif status == 'keep':
+                        f_book_7 = os.path.join(book_destination, "{}.cb7".format(book_b))
+                        logger.info("EVENT: copying %s to %s", book_f, f_book_7)
+                        if os.path.isfile(f_book_7):
+                            os.unlink(f_book_7)
+                        shutil.copy2(book, f_book_7)
+                    if status != 'ok':
                         logger.debug("----")
                         continue
 
@@ -197,7 +507,6 @@ def main(src, dst, root, replace, dryrun, log_level):
                     logger.debug("        t_book_z: %s", t_book_z)
                     try:
                         with zipfile.ZipFile(t_book_z, 'w', compression=zipfile.ZIP_STORED) as zip:
-                            hasComicInfoXml = False
                             pages = []
                             for xt_p, _, xt_fis in os.walk(tmp_x_dir):
                                 for xt_fi in xt_fis:
@@ -205,14 +514,35 @@ def main(src, dst, root, replace, dryrun, log_level):
                                     rel = rel.replace(os.sep, '/')
                                     if filterPage(rel):
                                         continue
-                                    # TBD: test for credit pages, comicinfo.xml
-                                    if xt_fi in ['ComicInfo.xml']:
-                                        hasComicInfoXml = True
-                                        logger.debug("comicinfo exists.")
+                                    # TBD: test for credit pages
                                     pages.append(os.path.join(xt_p, xt_fi))
-                            if not hasComicInfoXml:
-                                logger.debug("no comicinfo.xml found - injecting skeleton(?)")
                             pages.sort()
+                            comicinfo = findComicInfo(pages, tmp_x_dir)
+                            xml = None
+                            if comicinfo is None:
+                                logger.debug("no comicinfo.xml found - creating one")
+                                comicinfo = os.path.join(tmp_x_dir, 'ComicInfo.xml')
+                            else:
+                                logger.debug("comicinfo exists.")
+                                with open(comicinfo, 'rb') as f:
+                                    xml = f.read()
+                            entries = [fileEntry(os.path.relpath(p, start=tmp_x_dir).replace(os.sep, '/'), p) for p in pages]
+                            try:
+                                xml = updateComicInfo(xml, entries)
+                            except ET.ParseError as e:
+                                logger.warning("Cannot parse ComicInfo.xml in %s - leaving it unchanged.", book_f)
+                                logger.debug("parse error: %s", e)
+                                xml = None
+                            except PageDataError as e:
+                                logger.warning("Not writing page data for %s - %s.", book_f, e)
+                                xml = None
+                            if xml is not None:
+                                logger.info("EVENT: writing page data to %s", os.path.relpath(comicinfo, start=tmp_x_dir))
+                                with open(comicinfo, 'wb') as f:
+                                    f.write(xml)
+                                if comicinfo not in pages:
+                                    pages.append(comicinfo)
+                                    pages.sort()
                             logger.info("EVENT: making %s ", t_book_z)
                             for page in pages:
                                 logger.debug("            page: %s", page)
@@ -229,11 +559,9 @@ def main(src, dst, root, replace, dryrun, log_level):
                             os.unlink(t_book_z)
                         raise
         else:
-            # Determine destination filename: rename .zip -> .cbz and .7z -> .cb7
+            # Determine destination filename: rename .zip -> .cbz
             if book_t == '.zip':
                 dest_name = f"{book_b}.cbz"
-            elif book_t == '.7z':
-                dest_name = f"{book_b}.cb7"
             else:
                 dest_name = book_f
             book_destination_f = os.path.join(book_destination, dest_name)
@@ -241,9 +569,13 @@ def main(src, dst, root, replace, dryrun, log_level):
                 logger.info("EVENT: copying %s to %s", book_f, book_destination_f)
                 if not dryrun:
                     if os.path.isfile(book_destination_f):
-                        logger.info("EVENT: %s already exists - removing...", book_destination_f)
-                        os.unlink(book_destination_f)
-                    shutil.copy2(book, book_destination_f)
+                        logger.info("EVENT: %s already exists - replacing...", book_destination_f)
+                    if book_t in ['.cbz', '.zip']:
+                        copyZipBook(book, book_destination_f, book_f)
+                    else:
+                        if os.path.isfile(book_destination_f):
+                            os.unlink(book_destination_f)
+                        shutil.copy2(book, book_destination_f)
             logger.debug("----")
             continue
         logger.debug("----")

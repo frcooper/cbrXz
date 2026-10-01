@@ -2,7 +2,7 @@
 
 A small command‑line utility to normalize comic archives:
 
-- Converts .cbr/.rar to .cbz
+- Converts .cbr/.rar and .cb7/.7z to .cbz
 - Copies other supported book types unchanged
 - Mirrors the source folder structure into a destination folder
 
@@ -11,7 +11,8 @@ Supported types: .cbr, .rar, .cbz, .zip, .cb7, .7z, .pdf, .epub
 ## Requirements
 
 - Python 3.8+
-- Python packages: see `requirements.txt` (pytest, rarfile)
+- Python packages: see `requirements.txt` (pytest, rarfile, click, Pillow, py7zr)
+- 7z extraction is built in (py7zr); no external tool needed.
 - RAR extraction:
   - Windows: UnRAR.exe on PATH, or bsdtar/libarchive
   - macOS/Linux: unrar or bsdtar/libarchive on PATH
@@ -59,9 +60,25 @@ python cbrXz.py SRC DST [options]
 ### Behavior
 
 - Extensions are matched case‑insensitively.
-- Non‑RAR types are copied with metadata preserved (via `shutil.copy2`).
-- .cbr/.rar are extracted to a temp dir and re‑packed as `.cbz`; output goes under `DST/<relative subpath>/`.
+- Other types are copied with metadata preserved (via `shutil.copy2`).
+- .cbr/.rar and .cb7/.7z are extracted to a temp dir and re‑packed as `.cbz`; output goes under `DST/<relative subpath>/`.
+  - A .cbr/.cb7 that is really a zip is copied to `.cbz` (with the page data handling below).
+  - A .cb7/.7z that can't be extracted (encrypted, unsupported compression method, or not actually a 7z) is copied unchanged as `.cb7`, with a warning.
 - Repacked `.cbz` archives use stored (uncompressed) ZIP entries. Most comic pages are already compressed image formats (JPEG/PNG/WebP), so deflation adds CPU time with negligible size savings; the remaining text/XML is a tiny fraction of total size.
+- Repacked `.cbz` archives get page data in `ComicInfo.xml`. If the archive has no `ComicInfo.xml`, one is created; if it has one, only missing `PageCount`, `<Pages>`, `<Page>` entries and attributes are added — existing values are never overwritten. Each page (image files, in archive order) gets:
+  - `ImageSize`, `ImageWidth`, `ImageHeight`, and `DoublePage="true"` for landscape pages (ComicInfo schema attributes)
+  - `ImageFormat` (e.g. `JPEG`, `PNG`), `ImageBitDepth` (bits per pixel), `ImageDpi` (`300`, or `300x72` when axes differ, when the image records it) — extensions outside the ComicInfo schema
+  - Page data is only written when it is guaranteed to describe the right pages. Otherwise the archive is written without it and a warning is logged. Writing is skipped when:
+    - page file names sort differently in plain, case‑insensitive and natural order (e.g. `p1, p2, p10`), or two names have the same page number (`p1`, `p01`)
+    - the archive contains images some readers skip (`.tif`, `.avif`, `.jxl`, `.heic`, `.jp2`)
+    - any page image cannot be read
+    - an existing `PageCount` differs from the number of images, or an existing `<Page>` value (size, dimensions, format, depth, DPI) differs from the image at that index
+    - existing `<Page>` entries are out of range or duplicated, or cannot be corroborated by a matching `PageCount` or a matching value
+- Copied `.cbz`/`.zip` archives finish with a `ComicInfo.xml` holding page data whenever it can be written correctly (same checks as above):
+  - No `ComicInfo.xml`: one is appended. Existing entries are not rewritten and only image headers are read, so this costs little more than the copy.
+  - A `ComicInfo.xml` missing page data: the archive is rewritten with it filled in, keeping entry order, names and timestamps. Entries are stored (uncompressed), as in repacked RARs. On a ~190 MB book this took ~0.17 s for a stored archive and ~0.7 s for a deflated one, against ~0.05 s for a plain copy.
+  - Page data already complete, or it can't be verified, or the archive can't be read or rewritten (e.g. encrypted entries): copied byte‑for‑byte.
+- PDF and EPUB are copied byte‑for‑byte.
 - Relative paths use `os.path.relpath` for robustness; zip arcnames use forward slashes.
 - Dry‑run skips file system writes but will still walk the tree and plan actions.
 
@@ -97,7 +114,7 @@ python cbrXz.py -V
 
 - Test runner: `pytest`
 - Real binary fixtures live in `tests/fixtures/` and are used by tests in `tests/test_extensions.py`.
-  - Non‑RAR fixtures are verified byte‑for‑byte copies.
+  - Copied fixtures are verified byte‑for‑byte; the `.cb7` fixture is checked as a repacked `.cbz`.
   - RAR fixtures: if a fixture is a real RAR and an extractor is available, output is validated as a real zip (`.cbz`). If not a real RAR, the test expects an unchanged byte copy to `.cbz`.
 
 Run all tests:
