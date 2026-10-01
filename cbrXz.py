@@ -33,6 +33,15 @@ MODE_BITS = {
 
 # ComicInfo elements that follow <Pages> in the schema sequence
 AFTER_PAGES = ['CommunityRating', 'MainCharacterOrItem', 'Review', 'GTIN']
+# ComicInfo elements that follow <PageCount> in the schema sequence
+AFTER_PAGECOUNT = ['LanguageISO', 'Format', 'BlackAndWhite', 'Manga', 'Characters', 'Teams',
+                   'Locations', 'ScanInformation', 'StoryArc', 'StoryArcNumber', 'SeriesGroup',
+                   'AgeRating', 'Pages'] + AFTER_PAGES
+
+def insertBefore(root, el, following):
+    """Insert el before the first child of root whose tag is in following, else append."""
+    after = [i for i, child in enumerate(root) if child.tag in following]
+    root.insert(after[0] if after else len(root), el)
 
 ET.register_namespace('xsd', 'http://www.w3.org/2001/XMLSchema')
 ET.register_namespace('xsi', 'http://www.w3.org/2001/XMLSchema-instance')
@@ -197,14 +206,13 @@ def updateComicInfo(xml, entries):
 
     if pages_el is None:
         pages_el = ET.Element('Pages')
-        after = [i for i, el in enumerate(root) if el.tag in AFTER_PAGES]
-        root.insert(after[0] if after else len(root), pages_el)
+        insertBefore(root, pages_el, AFTER_PAGES)
         changed = True
 
     if count_el is None:
         count_el = ET.Element('PageCount')
         count_el.text = str(len(pages))
-        root.insert(list(root).index(pages_el), count_el)
+        insertBefore(root, count_el, AFTER_PAGECOUNT)
         changed = True
 
     for i, info in enumerate(infos):

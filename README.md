@@ -71,7 +71,7 @@ python cbrXz.py SRC DST [options]
     - any page image cannot be read
     - an existing `PageCount` differs from the number of images, or an existing `<Page>` value (size, dimensions, format, depth, DPI, hash) differs from the image at that index
     - existing `<Page>` entries are out of range or duplicated, or cannot be corroborated by a matching `PageCount` or a matching value
-  - Copied (non‑RAR) archives are left byte‑for‑byte unchanged.
+- Copied (non‑RAR) archives are left byte‑for‑byte unchanged.
 - Relative paths use `os.path.relpath` for robustness; zip arcnames use forward slashes.
 - Dry‑run skips file system writes but will still walk the tree and plan actions.
 

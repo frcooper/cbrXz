@@ -111,6 +111,13 @@ def test_adds_pages_before_trailing_elements(tmp_path):
     assert [el.tag for el in root] == ['Series', 'PageCount', 'Pages', 'CommunityRating']
 
 
+def test_adds_pagecount_in_schema_order(tmp_path):
+    entries = entries_for(tmp_path, ['p00.png'])
+    existing = b"<ComicInfo><Web>w</Web><Format>f</Format><AgeRating>a</AgeRating></ComicInfo>"
+    root, _ = pages_of(cbrXz.updateComicInfo(existing, entries))
+    assert [el.tag for el in root] == ['Web', 'PageCount', 'Format', 'AgeRating', 'Pages']
+
+
 def test_returns_none_when_complete(tmp_path):
     entries = entries_for(tmp_path, ['p00.png'])
     xml = cbrXz.updateComicInfo(None, entries)
