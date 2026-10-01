@@ -12,6 +12,7 @@ requires-python = ">=3.8"
 dependencies = [
   "click>=8",
   "rarfile>=4",
+  "Pillow>=9",
 ]
 keywords = ["comics", "cbr", "cbz", "rar", "zip"]
 classifiers = [

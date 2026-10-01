@@ -1,6 +1,7 @@
 #! /usr/bin/python3
 
 import click
+import hashlib
 import logging
 import os
 import rarfile
@@ -8,14 +9,31 @@ import shutil
 import tempfile
 import zipfile
 import re
+import xml.etree.ElementTree as ET
 from importlib import metadata as _metadata
 
+from PIL import Image
 
 
 # moved logging configuration into main; keep module-level logger
 logger = logging.getLogger(__name__)
 
 BOOK_TYPES = ['.cbr', '.rar', '.cbz', '.zip', '.cb7', '.7z', '.pdf', '.epub']
+IMAGE_TYPES = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tif', '.tiff', '.avif', '.jxl', '.heic', '.heif']
+
+# Bits per pixel for Pillow image modes
+MODE_BITS = {
+    '1': 1, 'L': 8, 'P': 8, 'LA': 16, 'PA': 16, 'La': 16,
+    'RGB': 24, 'YCbCr': 24, 'LAB': 24, 'HSV': 24,
+    'RGBA': 32, 'RGBa': 32, 'RGBX': 32, 'CMYK': 32,
+    'I;16': 16, 'I;16L': 16, 'I;16B': 16, 'I;16N': 16, 'I': 32, 'F': 32,
+}
+
+# ComicInfo elements that follow <Pages> in the schema sequence
+AFTER_PAGES = ['CommunityRating', 'MainCharacterOrItem', 'Review', 'GTIN']
+
+ET.register_namespace('xsd', 'http://www.w3.org/2001/XMLSchema')
+ET.register_namespace('xsi', 'http://www.w3.org/2001/XMLSchema-instance')
 
 def get_version() -> str:
     """Return the project version from installed package metadata.
@@ -54,6 +72,95 @@ def filterPage(s: str) -> bool:
     if sp.startswith('__MACOSX/') or '/__MACOSX/' in sp:
         return True
     return False
+
+def isPage(s: str) -> bool:
+    """Return True if the path is an image that counts as a comic page."""
+    return os.path.splitext(s)[1].lower() in IMAGE_TYPES
+
+def pageInfo(path: str) -> dict:
+    """Return ComicInfo <Page> attributes describing the image at path.
+    ImageSize/ImageWidth/ImageHeight/DoublePage are ComicInfo schema attributes;
+    ImageFormat/ImageBitDepth/ImageDpi/ImageHash are extensions.
+    """
+    sha = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(1 << 20), b''):
+            sha.update(chunk)
+    info = {'ImageSize': str(os.path.getsize(path))}
+    try:
+        with Image.open(path) as im:
+            width, height = im.size
+            info['ImageWidth'] = str(width)
+            info['ImageHeight'] = str(height)
+            if width > height:
+                info['DoublePage'] = 'true'
+            if im.format:
+                info['ImageFormat'] = im.format
+            if im.mode in MODE_BITS:
+                info['ImageBitDepth'] = str(MODE_BITS[im.mode])
+            dpi = im.info.get('dpi')
+            if dpi:
+                x, y = (round(float(d)) for d in dpi)
+                if x > 0 and y > 0:
+                    info['ImageDpi'] = str(x) if x == y else f"{x}x{y}"
+    except Exception as e:  # pylint: disable=broad-except
+        logger.warning("Cannot read image data from %s", os.path.basename(path))
+        logger.debug("image error: %s", e)
+    info['ImageHash'] = sha.hexdigest()
+    return info
+
+def updateComicInfo(xml, pages):
+    """Fill in missing page data in a ComicInfo.xml document.
+    xml is the existing document as bytes, or None to create one.
+    pages is the list of image paths in archive order.
+    Existing values are never overwritten. Returns the new document as
+    bytes, or None if nothing needed to change.
+    """
+    root = ET.Element('ComicInfo') if xml is None else ET.fromstring(xml)
+    changed = xml is None
+
+    pages_el = root.find('Pages')
+    if pages_el is None:
+        pages_el = ET.Element('Pages')
+        after = [i for i, el in enumerate(root) if el.tag in AFTER_PAGES]
+        root.insert(after[0] if after else len(root), pages_el)
+        changed = True
+
+    if root.find('PageCount') is None:
+        count_el = ET.Element('PageCount')
+        count_el.text = str(len(pages))
+        root.insert(list(root).index(pages_el), count_el)
+        changed = True
+
+    by_index = {}
+    for el in pages_el.findall('Page'):
+        try:
+            by_index.setdefault(int(el.get('Image', '')), el)
+        except ValueError:
+            continue
+
+    for i, page in enumerate(pages):
+        el = by_index.get(i)
+        if el is None:
+            el = ET.SubElement(pages_el, 'Page', {'Image': str(i)})
+            changed = True
+        for k, v in pageInfo(page).items():
+            if el.get(k) is None:
+                el.set(k, v)
+                changed = True
+
+    if not changed:
+        return None
+    if hasattr(ET, 'indent'):
+        ET.indent(root, space='  ')
+    return ET.tostring(root, encoding='utf-8', xml_declaration=True)
+
+def findComicInfo(paths, start):
+    """Return the shallowest ComicInfo.xml (case-insensitive) among paths, or None."""
+    found = [p for p in paths if os.path.basename(p).lower() == 'comicinfo.xml']
+    if not found:
+        return None
+    return min(found, key=lambda p: (os.path.relpath(p, start=start).count(os.sep), p))
 
 
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
@@ -197,7 +304,6 @@ def main(src, dst, root, replace, dryrun, log_level):
                     logger.debug("        t_book_z: %s", t_book_z)
                     try:
                         with zipfile.ZipFile(t_book_z, 'w', compression=zipfile.ZIP_STORED) as zip:
-                            hasComicInfoXml = False
                             pages = []
                             for xt_p, _, xt_fis in os.walk(tmp_x_dir):
                                 for xt_fi in xt_fis:
@@ -205,14 +311,31 @@ def main(src, dst, root, replace, dryrun, log_level):
                                     rel = rel.replace(os.sep, '/')
                                     if filterPage(rel):
                                         continue
-                                    # TBD: test for credit pages, comicinfo.xml
-                                    if xt_fi in ['ComicInfo.xml']:
-                                        hasComicInfoXml = True
-                                        logger.debug("comicinfo exists.")
+                                    # TBD: test for credit pages
                                     pages.append(os.path.join(xt_p, xt_fi))
-                            if not hasComicInfoXml:
-                                logger.debug("no comicinfo.xml found - injecting skeleton(?)")
                             pages.sort()
+                            comicinfo = findComicInfo(pages, tmp_x_dir)
+                            xml = None
+                            if comicinfo is None:
+                                logger.debug("no comicinfo.xml found - creating one")
+                                comicinfo = os.path.join(tmp_x_dir, 'ComicInfo.xml')
+                            else:
+                                logger.debug("comicinfo exists.")
+                                with open(comicinfo, 'rb') as f:
+                                    xml = f.read()
+                            try:
+                                xml = updateComicInfo(xml, [p for p in pages if isPage(p)])
+                            except ET.ParseError as e:
+                                logger.warning("Cannot parse ComicInfo.xml in %s - leaving it unchanged.", book_f)
+                                logger.debug("parse error: %s", e)
+                                xml = None
+                            if xml is not None:
+                                logger.info("EVENT: writing page data to %s", os.path.relpath(comicinfo, start=tmp_x_dir))
+                                with open(comicinfo, 'wb') as f:
+                                    f.write(xml)
+                                if comicinfo not in pages:
+                                    pages.append(comicinfo)
+                                    pages.sort()
                             logger.info("EVENT: making %s ", t_book_z)
                             for page in pages:
                                 logger.debug("            page: %s", page)

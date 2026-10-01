@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
@@ -103,6 +104,15 @@ def test_fixture_rar_like_results(tmp_path: Path, ext: str):
             except AssertionError:
                 # If extractor is not available, behavior may differ; surface details
                 pytest.fail(f"Expected zip output for real RAR fixture {rar_path.name}")
+            with zipfile.ZipFile(out) as zf:
+                names = zf.namelist()
+                info = [n for n in names if n.lower().endswith("comicinfo.xml")]
+                assert info, f"Expected ComicInfo.xml in {out.name}"
+                images = [n for n in names if cbrXz.isPage(n)]
+                pages = ET.fromstring(zf.read(info[0])).find("Pages").findall("Page")
+                assert len(pages) >= len(images)
+                for page in pages[:len(images)]:
+                    assert page.get("ImageSize") and page.get("ImageHash")
         else:
             # Not a real RAR: script copies bytes into .cbz unchanged via NotRarFile path
             assert out.read_bytes() == local.read_bytes(), f"Expected raw copy for {rar_path.name}"

@@ -11,7 +11,7 @@ Supported types: .cbr, .rar, .cbz, .zip, .cb7, .7z, .pdf, .epub
 ## Requirements
 
 - Python 3.8+
-- Python packages: see `requirements.txt` (pytest, rarfile)
+- Python packages: see `requirements.txt` (pytest, rarfile, click, Pillow)
 - RAR extraction:
   - Windows: UnRAR.exe on PATH, or bsdtar/libarchive
   - macOS/Linux: unrar or bsdtar/libarchive on PATH
@@ -62,6 +62,10 @@ python cbrXz.py SRC DST [options]
 - Non‑RAR types are copied with metadata preserved (via `shutil.copy2`).
 - .cbr/.rar are extracted to a temp dir and re‑packed as `.cbz`; output goes under `DST/<relative subpath>/`.
 - Repacked `.cbz` archives use stored (uncompressed) ZIP entries. Most comic pages are already compressed image formats (JPEG/PNG/WebP), so deflation adds CPU time with negligible size savings; the remaining text/XML is a tiny fraction of total size.
+- Repacked `.cbz` archives get page data in `ComicInfo.xml`. If the archive has no `ComicInfo.xml`, one is created; if it has one, only missing `PageCount`, `<Pages>`, `<Page>` entries and attributes are added — existing values are never overwritten. Each page (image files, in archive order) gets:
+  - `ImageSize`, `ImageWidth`, `ImageHeight`, and `DoublePage="true"` for landscape pages (ComicInfo schema attributes)
+  - `ImageFormat` (e.g. `JPEG`, `PNG`), `ImageBitDepth` (bits per pixel), `ImageDpi` (`300`, or `300x72` when axes differ, when the image records it) and `ImageHash` (SHA‑256 hex) — extensions outside the ComicInfo schema
+  - Copied (non‑RAR) archives are left byte‑for‑byte unchanged.
 - Relative paths use `os.path.relpath` for robustness; zip arcnames use forward slashes.
 - Dry‑run skips file system writes but will still walk the tree and plan actions.
 
