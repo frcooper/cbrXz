@@ -3,6 +3,7 @@
 import click
 import logging
 import os
+import py7zr
 import rarfile
 import shutil
 import tempfile
@@ -18,6 +19,8 @@ from PIL import Image
 logger = logging.getLogger(__name__)
 
 BOOK_TYPES = ['.cbr', '.rar', '.cbz', '.zip', '.cb7', '.7z', '.pdf', '.epub']
+# Books extracted and repacked as .cbz
+REPACK_TYPES = ['.cbr', '.rar', '.cb7', '.7z']
 IMAGE_TYPES = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']
 # Images some readers show as pages and others skip - page numbering is ambiguous when present
 UNCERTAIN_IMAGE_TYPES = ['.tif', '.tiff', '.avif', '.jxl', '.heic', '.heif', '.jp2']
@@ -313,6 +316,55 @@ def copyZipBook(src: str, dst: str, book_f: str) -> None:
             os.unlink(t_dst)
         raise
 
+def extractBook(book: str, book_t: str, out_dir: str, book_f: str) -> str:
+    """Extract a RAR or 7z book into out_dir.
+    Returns 'ok' when extracted, 'zip' when the book is really a zip, 'keep' when
+    it cannot be extracted but should still be copied unchanged (encrypted,
+    unsupported compression, not a 7z at all), or 'bad' when it is corrupt.
+    """
+    if book_t in ['.cb7', '.7z']:
+        try:
+            with py7zr.SevenZipFile(book) as sz:
+                if sz.needs_password():
+                    logger.warning("Non-fatal error handling %s - encrypted, keeping it as 7z.", book_f)
+                    return 'keep'
+                logger.info("EVENT: extracting %s to %s", book_f, out_dir)
+                sz.extractall(out_dir)
+        except py7zr.exceptions.PasswordRequired:
+            logger.warning("Non-fatal error handling %s - encrypted, keeping it as 7z.", book_f)
+            return 'keep'
+        except py7zr.exceptions.UnsupportedCompressionMethodError as e:
+            logger.warning("Non-fatal error handling %s - unsupported compression, keeping it as 7z.", book_f)
+            logger.debug("py7zr error: %s", e)
+            return 'keep'
+        except py7zr.exceptions.Bad7zFile:
+            if zipfile.is_zipfile(book):
+                logger.warning("Non-fatal error handling %s - actually a Zip.", book_f)
+                return 'zip'
+            logger.warning("Non-fatal error handling %s - not a 7z archive, copying it unchanged.", book_f)
+            return 'keep'
+        except (py7zr.exceptions.ArchiveError, py7zr.exceptions.CrcError,
+                py7zr.exceptions.DecompressionError, py7zr.exceptions.AbsolutePathError) as e:
+            logger.error("ERROR: corrupted archive: %s", book_f)
+            logger.debug("py7zr error: %s", e)
+            return 'bad'
+        return 'ok'
+    try:
+        with rarfile.RarFile(book) as rar:
+            logger.info("EVENT: extracting %s to %s", book_f, out_dir)
+            try:
+                rar.extractall(out_dir)
+            except rarfile.RarWarning as warning:
+                logger.warning("Non-fatal error handling %s - some data loss likely.", book_f)
+                logger.debug("rarfile warning: %s", warning)
+    except rarfile.NotRarFile:
+        logger.warning("Non-fatal error handling %s - actually a Zip.", book_f)
+        return 'zip'
+    except (rarfile.BadRarFile, rarfile.RarCRCError):
+        logger.error("ERROR: corrupted archive: %s", book_f)
+        return 'bad'
+    return 'ok'
+
 def findComicInfo(paths, start):
     """Return the shallowest ComicInfo.xml (case-insensitive) among paths, or None."""
     found = [p for p in paths if os.path.basename(p).lower() == 'comicinfo.xml']
@@ -423,7 +475,7 @@ def main(src, dst, root, replace, dryrun, log_level):
             if not dryrun:
                 os.makedirs(book_destination)
 
-        if book_t in ['.cbr', '.rar']:
+        if book_t in REPACK_TYPES:
             book_z = "{}.cbz".format(book_b)
             logger.debug("          book_z: %s", book_z)
             f_book_z = os.path.join(book_destination, book_z)
@@ -435,22 +487,17 @@ def main(src, dst, root, replace, dryrun, log_level):
                     continue
                 with tempfile.TemporaryDirectory() as tmp_x_dir:
                     logger.debug("       tmp_x_dir: %s", tmp_x_dir)
-                    try:
-                        with rarfile.RarFile(book) as rar:
-                            logger.info("EVENT: extracting %s to %s", book_f, tmp_x_dir)
-                            try:
-                                rar.extractall(tmp_x_dir)
-                            except rarfile.RarWarning as warning:
-                                logger.warning("Non-fatal error handling %s - some data loss likely.", book_f)
-                                logger.debug("rarfile warning: %s", warning)
-                    except rarfile.NotRarFile:
-                        logger.warning("Non-fatal error handling %s - actually a Zip.", book_f)
+                    status = extractBook(book, book_t, tmp_x_dir, book_f)
+                    if status == 'zip':
                         logger.info("EVENT: copying %s to %s", book_f, f_book_z)
                         copyZipBook(book, f_book_z, book_f)
-                        logger.debug("----")
-                        continue
-                    except (rarfile.BadRarFile, rarfile.RarCRCError):
-                        logger.error("ERROR: corrupted archive: %s", book_f)
+                    elif status == 'keep':
+                        f_book_7 = os.path.join(book_destination, "{}.cb7".format(book_b))
+                        logger.info("EVENT: copying %s to %s", book_f, f_book_7)
+                        if os.path.isfile(f_book_7):
+                            os.unlink(f_book_7)
+                        shutil.copy2(book, f_book_7)
+                    if status != 'ok':
                         logger.debug("----")
                         continue
 
@@ -512,11 +559,9 @@ def main(src, dst, root, replace, dryrun, log_level):
                             os.unlink(t_book_z)
                         raise
         else:
-            # Determine destination filename: rename .zip -> .cbz and .7z -> .cb7
+            # Determine destination filename: rename .zip -> .cbz
             if book_t == '.zip':
                 dest_name = f"{book_b}.cbz"
-            elif book_t == '.7z':
-                dest_name = f"{book_b}.cb7"
             else:
                 dest_name = book_f
             book_destination_f = os.path.join(book_destination, dest_name)

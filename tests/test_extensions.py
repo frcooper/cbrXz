@@ -5,6 +5,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
+import py7zr
 import pytest
 import rarfile
 
@@ -17,7 +18,8 @@ sys.path.insert(0, str(ROOT))
 import cbrXz  # noqa: E402
 
 RAR_EXTS = [".cbr", ".rar"]
-NON_RAR_EXTS = [ext for ext in cbrXz.BOOK_TYPES if ext.lower() not in RAR_EXTS]
+SEVENZIP_EXTS = [".cb7", ".7z"]
+NON_RAR_EXTS = [ext for ext in cbrXz.BOOK_TYPES if ext.lower() not in cbrXz.REPACK_TYPES]
 
 
 def run(args):
@@ -45,8 +47,6 @@ def expected_non_rar_name(p: Path) -> str:
     stem = p.stem
     if ext == ".zip":
         return f"{stem}.cbz"
-    if ext == ".7z":
-        return f"{stem}.cb7"
     return p.name
 
 
@@ -125,3 +125,31 @@ def test_fixture_rar_like_results(tmp_path: Path, ext: str):
         else:
             # Not a real RAR: script copies bytes into .cbz unchanged via NotRarFile path
             assert out.read_bytes() == local.read_bytes(), f"Expected raw copy for {rar_path.name}"
+
+
+@pytest.mark.parametrize("ext", SEVENZIP_EXTS)
+def test_fixture_7z_repacked_to_cbz(tmp_path: Path, ext: str):
+    files = fixtures_with_ext(ext)
+    if not files:
+        pytest.skip(f"No fixtures for {ext}")
+    for sz_path in files:
+        src_dir = tmp_path / sz_path.stem / "src"
+        dst_dir = tmp_path / sz_path.stem / "dst"
+        x_dir = tmp_path / sz_path.stem / "x"
+        local = copy_to_dir([sz_path], src_dir)[0]
+
+        proc = run([str(src_dir), str(dst_dir)])
+        assert proc.returncode == 0, proc.stderr or proc.stdout
+
+        out = dst_dir / (sz_path.stem + ".cbz")
+        assert out.exists(), f"Expected output {out.name} for {sz_path.name}"
+        assert not (dst_dir / (sz_path.stem + ".cb7")).exists()
+        with py7zr.SevenZipFile(local) as sz:
+            sz.extractall(x_dir)
+        with zipfile.ZipFile(out) as zf:
+            assert zf.testzip() is None
+            assert all(i.compress_type == zipfile.ZIP_STORED for i in zf.infolist())
+            for f in x_dir.rglob("*"):
+                name = f.relative_to(x_dir).as_posix()
+                if f.is_file() and name.lower() != "comicinfo.xml":
+                    assert zf.read(name) == f.read_bytes()

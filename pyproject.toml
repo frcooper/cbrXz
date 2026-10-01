@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "cbrXz"
 version = "1.3.2"
-description = "Normalize comic archives: convert .cbr/.rar to .cbz and mirror/copy other supported types."
+description = "Normalize comic archives: convert .cbr/.rar/.cb7/.7z to .cbz and mirror/copy other supported types."
 readme = { file = "README.md", content-type = "text/markdown" }
 authors = [{ name = "frcooper" }]
 requires-python = ">=3.8"
@@ -13,6 +13,7 @@ dependencies = [
   "click>=8",
   "rarfile>=4",
   "Pillow>=9",
+  "py7zr>=0.20.2",
 ]
 keywords = ["comics", "cbr", "cbz", "rar", "zip"]
 classifiers = [
