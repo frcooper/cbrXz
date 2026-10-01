@@ -19,7 +19,9 @@ from PIL import Image
 logger = logging.getLogger(__name__)
 
 BOOK_TYPES = ['.cbr', '.rar', '.cbz', '.zip', '.cb7', '.7z', '.pdf', '.epub']
-IMAGE_TYPES = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tif', '.tiff', '.avif', '.jxl', '.heic', '.heif']
+IMAGE_TYPES = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']
+# Images some readers show as pages and others skip - page numbering is ambiguous when present
+UNCERTAIN_IMAGE_TYPES = ['.tif', '.tiff', '.avif', '.jxl', '.heic', '.heif', '.jp2']
 
 # Bits per pixel for Pillow image modes
 MODE_BITS = {
@@ -34,6 +36,14 @@ AFTER_PAGES = ['CommunityRating', 'MainCharacterOrItem', 'Review', 'GTIN']
 
 ET.register_namespace('xsd', 'http://www.w3.org/2001/XMLSchema')
 ET.register_namespace('xsi', 'http://www.w3.org/2001/XMLSchema-instance')
+
+# <Page> attributes that can be checked against the image they describe
+INT_ATTRS = ['ImageSize', 'ImageWidth', 'ImageHeight', 'ImageBitDepth']
+STR_ATTRS = ['ImageFormat', 'ImageDpi', 'ImageHash']
+
+
+class PageDataError(Exception):
+    """Page data cannot be guaranteed to describe the right pages."""
 
 def get_version() -> str:
     """Return the project version from installed package metadata.
@@ -104,47 +114,105 @@ def pageInfo(path: str) -> dict:
                 if x > 0 and y > 0:
                     info['ImageDpi'] = str(x) if x == y else f"{x}x{y}"
     except Exception as e:  # pylint: disable=broad-except
-        logger.warning("Cannot read image data from %s", os.path.basename(path))
-        logger.debug("image error: %s", e)
+        raise PageDataError(f"cannot read image {os.path.basename(path)}: {e}") from e
     info['ImageHash'] = sha.hexdigest()
     return info
 
-def updateComicInfo(xml, pages):
+def naturalKey(s: str) -> list:
+    """Sort key matching how comic readers order page names (case-insensitive, numbers by value)."""
+    return [int(t) if t.isdigit() else t.lower() for t in re.split(r'(\d+)', s)]
+
+def pageOrder(entries) -> list:
+    """Return the page images among entries [(arcname, path)] in reading order.
+    Raises PageDataError unless every common ordering (plain, case-insensitive,
+    natural) agrees, so a page index means the same image in any reader.
+    """
+    uncertain = [n for n, _ in entries if os.path.splitext(n)[1].lower() in UNCERTAIN_IMAGE_TYPES]
+    if uncertain:
+        raise PageDataError(f"readers disagree on whether {uncertain[0]} is a page")
+    pages = sorted((n, p) for n, p in entries if isPage(n))
+    if not pages:
+        raise PageDataError("no page images")
+    names = [n for n, _ in pages]
+    if len({tuple(naturalKey(n)) for n in names}) != len(names):
+        raise PageDataError("page names collide in natural order")
+    if sorted(names, key=naturalKey) != names or sorted(names, key=str.lower) != names:
+        raise PageDataError("page names sort differently in plain and natural order")
+    return pages
+
+def checkPage(el, info: dict) -> bool:
+    """Compare an existing <Page> to the image it claims to describe.
+    Raises PageDataError on any mismatch; returns True if anything matched.
+    """
+    matched = False
+    for k in INT_ATTRS + STR_ATTRS:
+        v = el.get(k)
+        if v is None or k not in info:
+            continue
+        try:
+            same = int(v) == int(info[k]) if k in INT_ATTRS else v.strip().lower() == info[k].lower()
+        except ValueError:
+            same = False
+        if not same:
+            raise PageDataError(f"page {el.get('Image')} has {k}={v}, image has {info[k]}")
+        matched = True
+    return matched
+
+def updateComicInfo(xml, entries):
     """Fill in missing page data in a ComicInfo.xml document.
     xml is the existing document as bytes, or None to create one.
-    pages is the list of image paths in archive order.
+    entries is [(arcname, path)] for every file in the archive.
     Existing values are never overwritten. Returns the new document as
-    bytes, or None if nothing needed to change.
+    bytes, or None if nothing needed to change. Raises PageDataError if the
+    data cannot be guaranteed to land on the right pages.
     """
     root = ET.Element('ComicInfo') if xml is None else ET.fromstring(xml)
     changed = xml is None
+    pages = pageOrder(entries)
+    infos = [pageInfo(p) for _, p in pages]
+
+    count_el = root.find('PageCount')
+    if count_el is not None:
+        try:
+            count = int((count_el.text or '').strip())
+        except ValueError:
+            raise PageDataError(f"PageCount is {count_el.text!r}")
+        if count != len(pages):
+            raise PageDataError(f"PageCount is {count}, archive has {len(pages)} pages")
 
     pages_el = root.find('Pages')
+    by_index = {}
+    corroborated = count_el is not None
+    for el in [] if pages_el is None else pages_el.findall('Page'):
+        try:
+            i = int(el.get('Image', ''))
+        except ValueError:
+            raise PageDataError(f"page entry has Image={el.get('Image')!r}")
+        if i in by_index or not 0 <= i < len(pages):
+            raise PageDataError(f"page entry Image={i} is duplicated or out of range")
+        by_index[i] = el
+        corroborated = checkPage(el, infos[i]) or corroborated
+    if by_index and not corroborated:
+        raise PageDataError("existing page entries cannot be matched to images")
+
     if pages_el is None:
         pages_el = ET.Element('Pages')
         after = [i for i, el in enumerate(root) if el.tag in AFTER_PAGES]
         root.insert(after[0] if after else len(root), pages_el)
         changed = True
 
-    if root.find('PageCount') is None:
+    if count_el is None:
         count_el = ET.Element('PageCount')
         count_el.text = str(len(pages))
         root.insert(list(root).index(pages_el), count_el)
         changed = True
 
-    by_index = {}
-    for el in pages_el.findall('Page'):
-        try:
-            by_index.setdefault(int(el.get('Image', '')), el)
-        except ValueError:
-            continue
-
-    for i, page in enumerate(pages):
+    for i, info in enumerate(infos):
         el = by_index.get(i)
         if el is None:
             el = ET.SubElement(pages_el, 'Page', {'Image': str(i)})
             changed = True
-        for k, v in pageInfo(page).items():
+        for k, v in info.items():
             if el.get(k) is None:
                 el.set(k, v)
                 changed = True
@@ -323,11 +391,15 @@ def main(src, dst, root, replace, dryrun, log_level):
                                 logger.debug("comicinfo exists.")
                                 with open(comicinfo, 'rb') as f:
                                     xml = f.read()
+                            entries = [(os.path.relpath(p, start=tmp_x_dir).replace(os.sep, '/'), p) for p in pages]
                             try:
-                                xml = updateComicInfo(xml, [p for p in pages if isPage(p)])
+                                xml = updateComicInfo(xml, entries)
                             except ET.ParseError as e:
                                 logger.warning("Cannot parse ComicInfo.xml in %s - leaving it unchanged.", book_f)
                                 logger.debug("parse error: %s", e)
+                                xml = None
+                            except PageDataError as e:
+                                logger.warning("Not writing page data for %s - %s.", book_f, e)
                                 xml = None
                             if xml is not None:
                                 logger.info("EVENT: writing page data to %s", os.path.relpath(comicinfo, start=tmp_x_dir))

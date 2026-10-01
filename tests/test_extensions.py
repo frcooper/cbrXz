@@ -1,3 +1,4 @@
+import hashlib
 import os
 import subprocess
 import sys
@@ -104,15 +105,24 @@ def test_fixture_rar_like_results(tmp_path: Path, ext: str):
             except AssertionError:
                 # If extractor is not available, behavior may differ; surface details
                 pytest.fail(f"Expected zip output for real RAR fixture {rar_path.name}")
+            with rarfile.RarFile(str(local)) as rf:
+                original = {n: rf.read(n) for n in rf.namelist() if n.lower().endswith("comicinfo.xml")}
             with zipfile.ZipFile(out) as zf:
                 names = zf.namelist()
                 info = [n for n in names if n.lower().endswith("comicinfo.xml")]
                 assert info, f"Expected ComicInfo.xml in {out.name}"
-                images = [n for n in names if cbrXz.isPage(n)]
-                pages = ET.fromstring(zf.read(info[0])).find("Pages").findall("Page")
-                assert len(pages) >= len(images)
-                for page in pages[:len(images)]:
-                    assert page.get("ImageSize") and page.get("ImageHash")
+                xml = zf.read(info[0])
+                images = sorted(n for n in names if cbrXz.isPage(n))
+                if xml == original.get(info[0]):
+                    # Left alone: this fixture's ComicInfo.xml describes a 63 page book
+                    root = ET.fromstring(xml)
+                    assert int(root.findtext("PageCount")) != len(images)
+                else:
+                    # Written: every page's hash must match the image at that index
+                    pages = ET.fromstring(xml).find("Pages").findall("Page")
+                    for page in pages:
+                        data = zf.read(images[int(page.get("Image"))])
+                        assert page.get("ImageHash") == hashlib.sha256(data).hexdigest()
         else:
             # Not a real RAR: script copies bytes into .cbz unchanged via NotRarFile path
             assert out.read_bytes() == local.read_bytes(), f"Expected raw copy for {rar_path.name}"
