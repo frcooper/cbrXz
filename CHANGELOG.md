@@ -2,6 +2,31 @@
 
 <!-- version list -->
 
+## v1.4.0 (2026-10-01)
+
+### Bug Fixes
+
+- **comicinfo**: Insert PageCount in schema order
+  ([`f9a6de5`](https://github.com/frcooper/cbrXz/commit/f9a6de535b3139c6bacaf7f549eaebee8a2782b1))
+
+- **comicinfo**: Only write page data that is guaranteed correct
+  ([`f8b038a`](https://github.com/frcooper/cbrXz/commit/f8b038aa3739b70673b855372391da81c2d012c2))
+
+### Features
+
+- **7z**: Repack .cb7/.7z books as .cbz
+  ([`ae9683b`](https://github.com/frcooper/cbrXz/commit/ae9683b73169a04fcd66df4c4487aac9256f6671))
+
+- **comicinfo**: Append page data to copied zips without ComicInfo.xml
+  ([`bfe0597`](https://github.com/frcooper/cbrXz/commit/bfe059762317f7d1e34f7c172c97777f0bb0a83a))
+
+- **comicinfo**: Fill page data into existing ComicInfo.xml in copied zips
+  ([`6c9e401`](https://github.com/frcooper/cbrXz/commit/6c9e4014ac5014bb4185795db6469052822d2ad3))
+
+- **comicinfo**: Write full page data into ComicInfo.xml on repack
+  ([`2802bc4`](https://github.com/frcooper/cbrXz/commit/2802bc4929ced54d69cee895d138a2cc35132acd))
+
+
 ## v1.3.2 (2026-09-28)
 
 ### Bug Fixes
