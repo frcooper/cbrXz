@@ -44,15 +44,18 @@ macOS (Homebrew):  brew install unrar || brew install libarchive
 
 ```pwsh
 python cbrXz.py SRC DST [options]
+python cbrXz.py SRC --in-place [options]
 ```
 
 - `SRC`: source file or directory
-- `DST`: destination directory (created if missing)
+- `DST`: destination directory (created if missing); not given with `--in-place`
 
 ### Options
 
 - `-F, --replace`             Overwrite existing destination files
 - `-N, --dry-run`             Log actions but do not write outputs
+- `-i, --in-place`            Process SRC where it lies instead of writing to DST (see below)
+- `--trash PATH`              Where `--in-place` moves unreadable books (default: `SRC/_trash`)
 - `--root PATH`               Treat PATH as the source root when computing relative paths
 - `--log-level {ERROR,WARNING,INFO,DEBUG}`  Set logging verbosity (default: INFO)
 - `-V, --version`             Print release tag (vX.Y.Z) and exit
@@ -81,6 +84,26 @@ python cbrXz.py SRC DST [options]
 - PDF and EPUB are copied byte‑for‑byte.
 - Relative paths use `os.path.relpath` for robustness; zip arcnames use forward slashes.
 - Dry‑run skips file system writes but will still walk the tree and plan actions.
+
+### In‑place mode
+
+`--in-place` brings an existing tree up to the same state a copy would have, without a second copy of it:
+
+- `.cbz` books whose `ComicInfo.xml` is missing page data, or has stale page data, are rewritten with it (same rules as above). Books already up to date are only read, never written, so rerunning over a processed tree is cheap.
+- `.zip` books are renamed to `.cbz`.
+- `.cbr/.rar/.cb7/.7z` books are repacked as `.cbz` next to the original, and the original is deleted once the `.cbz` is in place.
+- A book's real type is detected from its contents, not its name, so a `.cbz` that is really a RAR is repacked rather than treated as broken.
+- Unreadable books — not a zip, RAR or 7z at all (including empty and truncated files), or a corrupt RAR/7z — are moved to the trash folder, keeping their path relative to SRC. Nothing is deleted outright; a name already in the trash gets a ` (1)` suffix. The trash folder is skipped when walking SRC.
+- A 7z that is encrypted or uses an unsupported compression method is left as it is.
+- When the `.cbz` name is already taken by another file, the book is left alone with a warning, unless `--replace` is given.
+- PDF and EPUB books are left as they are.
+- Every write is built as a `.part` file next to the book and renamed over it, so an interrupted run never leaves a half‑written book.
+- The run ends with a count of books that were current, updated, converted, trashed, kept and skipped.
+
+```pwsh
+python cbrXz.py "D:\Comics\Library" --in-place --dry-run   # see what would change
+python cbrXz.py "D:\Comics\Library" --in-place --trash "D:\Comics\_trash"
+```
 
 ## Examples
 

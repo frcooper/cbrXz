@@ -268,6 +268,7 @@ def zipPageData(path: str, book_f: str) -> tuple:
     """Work out the page data a zip book needs.
     Returns (xml, name): the new ComicInfo.xml bytes (None if nothing should be
     written) and the name of the archive's existing ComicInfo.xml (None if it has none).
+    Raises zipfile.BadZipFile if the book cannot be read as a zip.
     """
     try:
         with zipfile.ZipFile(path) as zf:
@@ -276,8 +277,6 @@ def zipPageData(path: str, book_f: str) -> tuple:
             name = min(found, key=lambda n: (n.count('/'), n)) if found else None
             existing = zf.read(name) if name else None
             return updateComicInfo(existing, [zipEntry(zf, i) for i in infos], book_f), name
-    except zipfile.BadZipFile:
-        logger.warning("Not writing page data for %s - not a valid zip.", book_f)
     except ET.ParseError as e:
         logger.warning("Cannot parse ComicInfo.xml in %s - leaving it unchanged.", book_f)
         logger.debug("parse error: %s", e)
@@ -308,12 +307,22 @@ def rewriteZip(src: str, dst: str, name: str, data: bytes) -> None:
 
 def copyZipBook(src: str, dst: str, book_f: str) -> None:
     """Copy a zip book to dst so it finishes with a ComicInfo.xml holding page data.
-    A missing ComicInfo.xml is appended without rewriting the existing entries; an
-    incomplete one means rewriting the archive. When no correct page data can be
-    written the book is copied byte-for-byte. Built next to dst and renamed into
-    place so a partial file is never published.
+    When no correct page data can be written the book is copied byte-for-byte.
     """
-    xml, name = zipPageData(src, book_f)
+    try:
+        xml, name = zipPageData(src, book_f)
+    except zipfile.BadZipFile:
+        logger.warning("Not writing page data for %s - not a valid zip.", book_f)
+        xml, name = None, None
+    writeZipBook(src, dst, xml, name, book_f)
+
+def writeZipBook(src: str, dst: str, xml, name, book_f: str) -> None:
+    """Write the zip book at src to dst with xml (from zipPageData) as its ComicInfo.xml.
+    A missing ComicInfo.xml is appended without rewriting the existing entries; an
+    incomplete one means rewriting the archive. xml None copies byte-for-byte.
+    Built next to dst and renamed into place so a partial file is never published;
+    src and dst may be the same file.
+    """
     t_dst = "{}.part".format(dst)
     try:
         if xml is None:
@@ -396,16 +405,167 @@ def findComicInfo(paths, start):
         return None
     return min(found, key=lambda p: (os.path.relpath(p, start=start).count(os.sep), p))
 
+def packBook(tmp_x_dir: str, f_book_z: str, book_f: str) -> None:
+    """Pack the book extracted into tmp_x_dir as the .cbz f_book_z, with page data in its ComicInfo.xml."""
+    # Build the archive next to its final location so publishing it is an
+    # atomic rename instead of a second full-size copy out of a temp dir.
+    t_book_z = "{}.part".format(f_book_z)
+    logger.debug("        t_book_z: %s", t_book_z)
+    try:
+        with zipfile.ZipFile(t_book_z, 'w', compression=zipfile.ZIP_STORED) as zip:
+            pages = []
+            for xt_p, _, xt_fis in os.walk(tmp_x_dir):
+                for xt_fi in xt_fis:
+                    rel = os.path.relpath(os.path.join(xt_p, xt_fi), start=tmp_x_dir)
+                    rel = rel.replace(os.sep, '/')
+                    if filterPage(rel):
+                        continue
+                    # TBD: test for credit pages
+                    pages.append(os.path.join(xt_p, xt_fi))
+            pages.sort()
+            comicinfo = findComicInfo(pages, tmp_x_dir)
+            xml = None
+            if comicinfo is None:
+                logger.debug("no comicinfo.xml found - creating one")
+                comicinfo = os.path.join(tmp_x_dir, 'ComicInfo.xml')
+            else:
+                logger.debug("comicinfo exists.")
+                with open(comicinfo, 'rb') as f:
+                    xml = f.read()
+            entries = [fileEntry(os.path.relpath(p, start=tmp_x_dir).replace(os.sep, '/'), p) for p in pages]
+            try:
+                xml = updateComicInfo(xml, entries, book_f)
+            except ET.ParseError as e:
+                logger.warning("Cannot parse ComicInfo.xml in %s - leaving it unchanged.", book_f)
+                logger.debug("parse error: %s", e)
+                xml = None
+            except PageDataError as e:
+                logger.warning("Not writing page data for %s - %s.", book_f, e)
+                xml = None
+            if xml is not None:
+                logger.info("EVENT: writing page data to %s", os.path.relpath(comicinfo, start=tmp_x_dir))
+                with open(comicinfo, 'wb') as f:
+                    f.write(xml)
+                if comicinfo not in pages:
+                    pages.append(comicinfo)
+                    pages.sort()
+            logger.info("EVENT: making %s ", t_book_z)
+            for page in pages:
+                logger.debug("            page: %s", page)
+                page_f = os.path.relpath(page, start=tmp_x_dir).replace(os.sep, "/")
+                if filterPage(page_f):
+                    continue
+                logger.debug("          page_f: %s", page_f)
+                zip.write(page, page_f)
+        # The central directory is only written on close - publish after it.
+        logger.info("EVENT: publishing %s", f_book_z)
+        os.replace(t_book_z, f_book_z)
+    except BaseException:
+        if os.path.isfile(t_book_z):
+            os.unlink(t_book_z)
+        raise
+
+
+def sniffArchive(book: str):
+    """Return the archive type book really is ('.cbz', '.cbr' or '.cb7'), whatever its name, or None."""
+    try:
+        if rarfile.is_rarfile(book):
+            return '.cbr'
+        if py7zr.is_7zfile(book):
+            return '.cb7'
+        if zipfile.is_zipfile(book):
+            return '.cbz'
+    except OSError:
+        pass
+    return None
+
+def trashBook(book: str, trash_dir: str, book_f: str, dryrun: bool) -> str:
+    """Move an unreadable book into trash_dir, never overwriting what is already there."""
+    base, ext = os.path.splitext(os.path.join(trash_dir, os.path.basename(book)))
+    target, n = base + ext, 1
+    while os.path.exists(target):
+        target, n = "{} ({}){}".format(base, n, ext), n + 1
+    logger.warning("Moving unreadable %s to %s", book_f, target)
+    if not dryrun:
+        os.makedirs(trash_dir, exist_ok=True)
+        shutil.move(book, target)
+    return 'trashed'
+
+def claimTarget(book: str, target: str, book_f: str, replace: bool) -> bool:
+    """Return True if book may be written to target, its new name in the tree."""
+    if os.path.normcase(book) == os.path.normcase(target) or not os.path.exists(target):
+        return True
+    if replace:
+        logger.info("EVENT: %s already exists - replacing...", target)
+        return True
+    logger.warning("Leaving %s alone - %s already exists (use --replace to overwrite).", book_f, target)
+    return False
+
+def inPlaceBook(book: str, book_t: str, trash_dir: str, replace: bool, dryrun: bool) -> str:
+    """Process book where it lies: a .cbz with page data replaces it, and an
+    unreadable book is moved to trash_dir. Returns what happened: 'current',
+    'updated', 'converted', 'trashed', 'kept' or 'skipped'.
+    """
+    book_d, book_f = os.path.split(book)
+    if book_t not in ['.cbz', '.zip'] + REPACK_TYPES:
+        return 'current'
+    real_t = sniffArchive(book)
+    if real_t is None:
+        return trashBook(book, trash_dir, book_f, dryrun)
+    f_book_z = os.path.join(book_d, os.path.splitext(book_f)[0] + '.cbz')
+
+    if real_t == '.cbz':
+        try:
+            xml, name = zipPageData(book, book_f)
+        except zipfile.BadZipFile:
+            return trashBook(book, trash_dir, book_f, dryrun)
+        renamed = os.path.normcase(book) != os.path.normcase(f_book_z)
+        if xml is None and not renamed:
+            return 'current'
+        if not claimTarget(book, f_book_z, book_f, replace):
+            return 'skipped'
+        if dryrun:
+            logger.info("EVENT: would update %s as %s", book_f, f_book_z)
+            return 'updated'
+        if xml is None:
+            logger.info("EVENT: renaming %s to %s", book_f, f_book_z)
+            os.replace(book, f_book_z)
+        else:
+            writeZipBook(book, f_book_z, xml, name, book_f)
+            if renamed:
+                os.unlink(book)
+        return 'updated'
+
+    if not claimTarget(book, f_book_z, book_f, replace):
+        return 'skipped'
+    if dryrun:
+        logger.info("EVENT: would extract %s and replace it with %s", book_f, f_book_z)
+        return 'converted'
+    with tempfile.TemporaryDirectory() as tmp_x_dir:
+        status = extractBook(book, real_t, tmp_x_dir, book_f)
+        if status == 'bad':
+            return trashBook(book, trash_dir, book_f, dryrun)
+        if status == 'keep':
+            # encrypted or unsupported compression - readable by other tools, so left as it is
+            return 'kept'
+        if status == 'zip':
+            return inPlaceBook(book, '.cbz', trash_dir, replace, dryrun)
+        packBook(tmp_x_dir, f_book_z, book_f)
+    os.unlink(book)
+    return 'converted'
+
 
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
 @click.version_option(version=f"v{get_version()}", prog_name="cbrXz")
 @click.argument('src', type=click.Path(exists=True, dir_okay=True, file_okay=True, path_type=str))
-@click.argument('dst', type=click.Path(dir_okay=True, file_okay=True, path_type=str))
+@click.argument('dst', required=False, type=click.Path(dir_okay=True, file_okay=True, path_type=str))
 @click.option('--root', required=False, type=click.Path(exists=True, dir_okay=True, file_okay=True, path_type=str), help='Override root for relative paths')
 @click.option('-F', '--replace', is_flag=True, help='Overwrite existing destination files')
 @click.option('-N', '--dry-run', 'dryrun', is_flag=True, help='Plan actions but do not write outputs')
+@click.option('-i', '--in-place', 'in_place', is_flag=True, help='Process SRC where it lies instead of writing to DST')
+@click.option('--trash', required=False, type=click.Path(file_okay=False, path_type=str), help='Where --in-place moves unreadable books (default: SRC/_trash)')
 @click.option('--log-level', default='INFO', type=click.Choice(['CRITICAL','ERROR','WARNING','INFO','DEBUG','NOTSET'], case_sensitive=False), help='Logging verbosity')
-def main(src, dst, root, replace, dryrun, log_level):
+def main(src, dst, root, replace, dryrun, in_place, trash, log_level):
     # cfg = {}
     total = 0
     books = []
@@ -419,17 +579,29 @@ def main(src, dst, root, replace, dryrun, log_level):
     )
 
     source = os.path.abspath(src)
-    destination = os.path.abspath(dst)
 
     # early input validation (no logging)
     if not (os.path.isdir(source) or os.path.isfile(source)):
         raise click.UsageError(f"Source must be a file or directory: {source}")
-    if os.path.isfile(destination):
-        raise click.UsageError(f"Destination must be a directory (not a file): {destination}")
-    try:
-        os.makedirs(destination, exist_ok=True)
-    except Exception as e:  # pylint: disable=broad-except
-        raise click.ClickException(f"Cannot create destination directory: {destination} ({e})")
+    if in_place:
+        if dst is not None:
+            raise click.UsageError("DST cannot be given with --in-place")
+        destination = None
+    else:
+        if dst is None:
+            raise click.UsageError("Missing argument 'DST' (or use --in-place)")
+        if trash is not None:
+            raise click.UsageError("--trash is only used with --in-place")
+        destination = os.path.abspath(dst)
+        if os.path.isfile(destination):
+            raise click.UsageError(f"Destination must be a directory (not a file): {destination}")
+        try:
+            os.makedirs(destination, exist_ok=True)
+        except Exception as e:  # pylint: disable=broad-except
+            raise click.ClickException(f"Cannot create destination directory: {destination} ({e})")
+    if in_place and trash is None:
+        trash = os.path.join(source if os.path.isdir(source) else os.path.dirname(source), '_trash')
+    trash = os.path.abspath(trash) if trash is not None else None
 
     logger.debug("source: %s", source)
     logger.debug("destination: %s", destination)
@@ -440,7 +612,9 @@ def main(src, dst, root, replace, dryrun, log_level):
         total = 1
         book_count = 1
     else:
-        for path, _, files in os.walk(source):
+        for path, dirs, files in os.walk(source):
+            # never pick up books already moved to the trash
+            dirs[:] = [d for d in dirs if trash is None or os.path.normcase(os.path.join(path, d)) != os.path.normcase(trash)]
             for f in files:
                 total += 1
 
@@ -479,6 +653,7 @@ def main(src, dst, root, replace, dryrun, log_level):
     # exit()
 
     books.sort()
+    outcomes = {}
     for book in books:
         logger.info("EVENT: processing %s", book)
         logger.debug("            book: %s", book)
@@ -491,6 +666,11 @@ def main(src, dst, root, replace, dryrun, log_level):
         logger.debug("          book_b: %s", book_b)
         book_t = book_t.lower()
         logger.debug("          book_t: %s", book_t)
+        if in_place:
+            outcome = inPlaceBook(book, book_t, os.path.join(trash, book_p), replace, dryrun)
+            outcomes[outcome] = outcomes.get(outcome, 0) + 1
+            logger.debug("----")
+            continue
         book_destination = os.path.join(destination, book_p)
         logger.debug("book_destination: %s", book_destination)
 
@@ -525,63 +705,7 @@ def main(src, dst, root, replace, dryrun, log_level):
                         logger.debug("----")
                         continue
 
-                    # Build the archive next to its final location so publishing it is an
-                    # atomic rename instead of a second full-size copy out of a temp dir.
-                    t_book_z = "{}.part".format(f_book_z)
-                    logger.debug("        t_book_z: %s", t_book_z)
-                    try:
-                        with zipfile.ZipFile(t_book_z, 'w', compression=zipfile.ZIP_STORED) as zip:
-                            pages = []
-                            for xt_p, _, xt_fis in os.walk(tmp_x_dir):
-                                for xt_fi in xt_fis:
-                                    rel = os.path.relpath(os.path.join(xt_p, xt_fi), start=tmp_x_dir)
-                                    rel = rel.replace(os.sep, '/')
-                                    if filterPage(rel):
-                                        continue
-                                    # TBD: test for credit pages
-                                    pages.append(os.path.join(xt_p, xt_fi))
-                            pages.sort()
-                            comicinfo = findComicInfo(pages, tmp_x_dir)
-                            xml = None
-                            if comicinfo is None:
-                                logger.debug("no comicinfo.xml found - creating one")
-                                comicinfo = os.path.join(tmp_x_dir, 'ComicInfo.xml')
-                            else:
-                                logger.debug("comicinfo exists.")
-                                with open(comicinfo, 'rb') as f:
-                                    xml = f.read()
-                            entries = [fileEntry(os.path.relpath(p, start=tmp_x_dir).replace(os.sep, '/'), p) for p in pages]
-                            try:
-                                xml = updateComicInfo(xml, entries, book_f)
-                            except ET.ParseError as e:
-                                logger.warning("Cannot parse ComicInfo.xml in %s - leaving it unchanged.", book_f)
-                                logger.debug("parse error: %s", e)
-                                xml = None
-                            except PageDataError as e:
-                                logger.warning("Not writing page data for %s - %s.", book_f, e)
-                                xml = None
-                            if xml is not None:
-                                logger.info("EVENT: writing page data to %s", os.path.relpath(comicinfo, start=tmp_x_dir))
-                                with open(comicinfo, 'wb') as f:
-                                    f.write(xml)
-                                if comicinfo not in pages:
-                                    pages.append(comicinfo)
-                                    pages.sort()
-                            logger.info("EVENT: making %s ", t_book_z)
-                            for page in pages:
-                                logger.debug("            page: %s", page)
-                                page_f = os.path.relpath(page, start=tmp_x_dir).replace(os.sep, "/")
-                                if filterPage(page_f):
-                                    continue
-                                logger.debug("          page_f: %s", page_f)
-                                zip.write(page, page_f)
-                        # The central directory is only written on close - publish after it.
-                        logger.info("EVENT: copying %s to %s", book_z, book_destination)
-                        os.replace(t_book_z, f_book_z)
-                    except BaseException:
-                        if os.path.isfile(t_book_z):
-                            os.unlink(t_book_z)
-                        raise
+                    packBook(tmp_x_dir, f_book_z, book_f)
         else:
             # Determine destination filename: rename .zip -> .cbz
             if book_t == '.zip':
@@ -605,6 +729,8 @@ def main(src, dst, root, replace, dryrun, log_level):
         logger.debug("----")
 
     logger.info("completed - %d books of %d files.", book_count, total)
+    if in_place:
+        logger.info("in place: %s", ", ".join(f"{n} {k}" for k, n in sorted(outcomes.items())) or "nothing to do")
     logger.info("exiting - success.")
 
 #####
