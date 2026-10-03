@@ -1,3 +1,4 @@
+import json
 import os
 import xml.etree.ElementTree as ET
 import zipfile
@@ -67,10 +68,12 @@ def test_in_place_leaves_current_books_untouched(tmp_path, run_cli):
     assert run_cli([src, "--in-place"]).returncode == 0
     before = (book.read_bytes(), os.stat(book).st_mtime_ns)
 
-    proc = run_cli([src, "--in-place"])
-    assert proc.returncode == 0, proc.stderr or proc.stdout
-    assert (book.read_bytes(), os.stat(book).st_mtime_ns) == before
-    assert "1 current" in proc.stderr
+    for args in (["--journal", tmp_path / "other.jsonl"], []):
+        proc = run_cli([src, "--in-place", *args])
+        assert proc.returncode == 0, proc.stderr or proc.stdout
+        assert (book.read_bytes(), os.stat(book).st_mtime_ns) == before
+    # checked and found current with a fresh journal, skipped unopened with the old one
+    assert "1 journaled" in proc.stderr
 
 
 @pytest.mark.integration
@@ -119,7 +122,8 @@ def test_in_place_custom_trash_and_dry_run(tmp_path, run_cli):
 @pytest.mark.parametrize("args, message", [
     (["--in-place", "DST"], "DST cannot be given"),
     ([], "Missing argument 'DST'"),
-    (["DST", "--trash", "bin"], "--trash is only used"),
+    (["DST", "--trash", "bin"], "only used with --in-place"),
+    (["DST", "--journal", "bin"], "only used with --in-place"),
 ])
 def test_in_place_argument_errors(tmp_path, run_cli, args, message):
     src = tmp_path / "src"
@@ -127,3 +131,84 @@ def test_in_place_argument_errors(tmp_path, run_cli, args, message):
     proc = run_cli([src, *[tmp_path / a if a in ("DST", "bin") else a for a in args]])
     assert proc.returncode != 0
     assert message in proc.stderr + proc.stdout
+
+
+@pytest.mark.integration
+def test_in_place_journal_skips_finished_books(tmp_path, run_cli):
+    src = tmp_path / "src"
+    a = make_book(src / "a.cbz", tmp_path, b"<ComicInfo/>")
+    b = make_book(src / "b.cbz", tmp_path)
+    assert run_cli([src, "--in-place"]).returncode == 0
+    journal = src / "_cbrXz_journal.jsonl"
+    recs = [json.loads(l) for l in journal.read_text().splitlines()]
+    assert {r["book"]: r["outcome"] for r in recs if "book" in r} == {"a.cbz": "updated", "b.cbz": "updated"}
+    assert not (src / "_cbrXz_journal.jsonl.tail").exists()
+
+    # a changed book is looked at again, an unchanged one is not even opened
+    make_book(b, tmp_path)
+    proc = run_cli([src, "--in-place"])
+    assert proc.returncode == 0, proc.stderr or proc.stdout
+    assert "1 journaled, 1 updated" in proc.stderr
+    assert page_heights(b) == ["45", "45"]
+
+
+@pytest.mark.integration
+def test_in_place_undoes_an_interrupted_patch(tmp_path, run_cli):
+    import cbrXz
+
+    src = tmp_path / "src"
+    book = make_book(src / "book.cbz", tmp_path, b"<ComicInfo/>")
+    original = book.read_bytes()
+    st = os.stat(book)
+    journal = cbrXz.Journal(str(src / "_cbrXz_journal.jsonl"), False)
+    with zipfile.ZipFile(book) as zf:
+        start = zf.start_dir
+    journal.beginPatch(str(book), start, original[start:], st)
+    journal.close()
+    # the run died half way through writing the patch
+    with open(book, "r+b") as f:
+        f.seek(start)
+        f.write(b"half a patch")
+        f.truncate()
+
+    proc = run_cli([src, "--in-place", "--dry-run"])
+    assert "Would undo the interrupted patch" in proc.stderr
+    assert book.read_bytes() != original
+
+    proc = run_cli([src, "--in-place"])
+    assert proc.returncode == 0, proc.stderr or proc.stdout
+    assert "undoing the interrupted patch" in proc.stderr
+    assert page_heights(book) == ["45", "45"]
+    assert not (src / "_cbrXz_journal.jsonl.tail").exists()
+
+
+def test_failed_patch_is_undone(tmp_path, monkeypatch):
+    import cbrXz
+
+    book = make_book(tmp_path / "book.cbz", tmp_path, b"<ComicInfo/>")
+    original = book.read_bytes()
+    real = zipfile.ZipFile.writestr
+
+    def broken(self, info, data, *a, **k):
+        self.fp.write(b"some of the new entry")
+        raise OSError("disk went away")
+    monkeypatch.setattr(zipfile.ZipFile, "writestr", broken)
+    with pytest.raises(OSError):
+        cbrXz.patchInPlace(str(book), "ComicInfo.xml", b"<ComicInfo/>", None, "book.cbz")
+    monkeypatch.setattr(zipfile.ZipFile, "writestr", real)
+    assert book.read_bytes() == original
+
+
+@pytest.mark.integration
+def test_in_place_carries_on_past_a_failing_book(tmp_path, run_cli):
+    src = tmp_path / "src"
+    make_book(src / "a.cbz", tmp_path)
+    make_book(src / "b.cbz", tmp_path)
+    (src / "a.cbz").chmod(0o444)  # read-only: patching it fails
+    try:
+        proc = run_cli([src, "--in-place"])
+    finally:
+        (src / "a.cbz").chmod(0o644)
+    assert proc.returncode == 1
+    assert "cannot process" in proc.stderr
+    assert page_heights(src / "b.cbz") == ["45", "45"]
