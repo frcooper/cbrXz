@@ -268,3 +268,32 @@ def test_in_place_without_a_trash_refuses_to_start(tmp_path, run_cli):
     assert proc.returncode != 0
     assert "create one or give --trash and --journal" in proc.stderr + proc.stdout
     assert book.read_bytes() == before
+
+
+@pytest.mark.integration
+def test_in_place_converts_a_cbz_that_is_really_7z(tmp_path, run_cli):
+    src = tmp_path / "src"
+    book = make_7z(src / "book.cbz", tmp_path)  # same name before and after conversion
+
+    proc = run_cli([src, "--in-place"])
+    assert proc.returncode == 0, proc.stderr or proc.stdout
+    assert "1 converted" in proc.stderr
+    assert page_heights(book) == ["45"]
+
+
+@pytest.mark.integration
+def test_in_place_reports_unverifiable_books(tmp_path, run_cli):
+    src = tmp_path / "src"
+    book = src / "book.cbz"
+    book.parent.mkdir(parents=True)
+    with zipfile.ZipFile(book, "w") as zf:
+        for n in ("p1.png", "p2.png", "p10.png"):  # plain and natural order disagree
+            img = tmp_path / n
+            Image.new("RGB", (30, 45)).save(img)
+            zf.write(img, n)
+    before = book.read_bytes()
+
+    proc = run_cli([src, "--in-place"])
+    assert proc.returncode == 0, proc.stderr or proc.stdout
+    assert "1 unverified" in proc.stderr
+    assert book.read_bytes() == before

@@ -662,9 +662,9 @@ def claimTarget(book: str, target: str, book_f: str, replace: bool) -> bool:
 def inPlaceBook(book: str, book_t: str, trash_dir: str, replace: bool, dryrun: bool, journal=None) -> tuple:
     """Process book where it lies: it finishes as a .cbz with page data, and an
     unreadable book is moved to trash_dir. Returns (outcome, path): what
-    happened - 'current', 'updated', 'converted', 'trashed', 'kept' or
-    'skipped' - and where the book now is (None if it left the tree or should
-    be looked at again by the next run).
+    happened - 'current', 'unverified' (page data cannot safely be written),
+    'updated', 'converted', 'trashed', 'kept' or 'skipped' - and where the book
+    now is (None if it left the tree or should be looked at again by the next run).
     """
     book_d, book_f = os.path.split(book)
     if book_t not in ['.cbz', '.zip'] + REPACK_TYPES:
@@ -681,7 +681,8 @@ def inPlaceBook(book: str, book_t: str, trash_dir: str, replace: bool, dryrun: b
             return trashBook(book, trash_dir, book_f, dryrun), None
         renamed = os.path.normcase(book) != os.path.normcase(f_book_z)
         if xml is None and not renamed:
-            return 'current', book
+            # no xml and no ComicInfo.xml means page data could not be worked out (warned)
+            return ('current' if name else 'unverified'), book
         if not claimTarget(book, f_book_z, book_f, replace):
             return 'skipped', None
         if dryrun:
@@ -709,7 +710,9 @@ def inPlaceBook(book: str, book_t: str, trash_dir: str, replace: bool, dryrun: b
         if status == 'zip':
             return inPlaceBook(book, '.cbz', trash_dir, replace, dryrun, journal)
         packBook(tmp_x_dir, f_book_z, book_f)
-    os.unlink(book)
+    if os.path.normcase(book) != os.path.normcase(f_book_z):
+        # a .cbz that was really a RAR/7z has just been replaced by its conversion
+        os.unlink(book)
     return 'converted', f_book_z
 
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})

@@ -99,7 +99,7 @@ python cbrXz.py SRC --in-place [options]
 - PDF and EPUB books are left as they are.
 - Repacked books are built as a `.part` file next to the book and renamed over it. Before a book is patched, the bytes the patch will overwrite (its central directory, usually a few KB) are saved beside the journal: a patch that fails is undone at once, and one cut short by a crash or power loss is undone at the start of the next run.
 - A book that fails (I/O error, permissions, ...) is logged and the run carries on; the exit code is 1 if any book failed.
-- The run ends with a count of books that were current, updated, converted, trashed, kept, skipped, failed and journaled.
+- The run ends with a count of books that were current, unverified (page data cannot safely be written - see the warnings), updated, converted, trashed, kept, skipped, failed and journaled.
 
 #### Resume journal
 
