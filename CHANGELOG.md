@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.4.1 (2026-10-03)
+
+### Bug Fixes
+
+- **comicinfo**: Correct stale page data instead of skipping the book
+  ([`272868a`](https://github.com/frcooper/cbrXz/commit/272868a7db10568d79888a9468866dbb2f9d5bd7))
+
+
 ## v1.4.0 (2026-10-01)
 
 ### Bug Fixes
