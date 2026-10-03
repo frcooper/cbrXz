@@ -44,15 +44,19 @@ macOS (Homebrew):  brew install unrar || brew install libarchive
 
 ```pwsh
 python cbrXz.py SRC DST [options]
+python cbrXz.py SRC --in-place [options]
 ```
 
 - `SRC`: source file or directory
-- `DST`: destination directory (created if missing)
+- `DST`: destination directory (created if missing); not given with `--in-place`
 
 ### Options
 
 - `-F, --replace`             Overwrite existing destination files
 - `-N, --dry-run`             Log actions but do not write outputs
+- `-i, --in-place`            Process SRC where it lies instead of writing to DST (see below)
+- `--trash PATH`              Where `--in-place` moves unreadable books (default: `Sys/DeleteQ` in SRC or the nearest folder above it)
+- `--journal PATH`            Record of books `--in-place` has finished (default: `Sys/cbrXz_journal.jsonl` beside `Sys/DeleteQ`)
 - `--root PATH`               Treat PATH as the source root when computing relative paths
 - `--log-level {ERROR,WARNING,INFO,DEBUG}`  Set logging verbosity (default: INFO)
 - `-V, --version`             Print release tag (vX.Y.Z) and exit
@@ -75,12 +79,37 @@ python cbrXz.py SRC DST [options]
     - an existing `PageCount` differs from the number of images, or an existing `<Page>` value (size, dimensions, format, depth, DPI) differs from the image at that index and the `<Page>` entries don't cover every page
     - existing `<Page>` entries are out of range or duplicated, or cannot be corroborated by a matching `PageCount` or a matching value
 - Copied `.cbz`/`.zip` archives finish with a `ComicInfo.xml` holding page data whenever it can be written correctly (same checks as above):
-  - No `ComicInfo.xml`: one is appended. Existing entries are not rewritten and only image headers are read, so this costs little more than the copy.
-  - A `ComicInfo.xml` missing page data, or with stale page data: the archive is rewritten with it filled in, keeping entry order, names and timestamps. Entries are stored (uncompressed), as in repacked RARs. On a ~190 MB book this took ~0.17 s for a stored archive and ~0.7 s for a deflated one, against ~0.05 s for a plain copy.
-  - Page data already complete, or it can't be verified, or the archive can't be read or rewritten (e.g. encrypted entries): copied byte‑for‑byte.
+  - No `ComicInfo.xml`, or one missing page data or with stale page data: the copy is *patched*. The new `ComicInfo.xml` (stored) is written where the archive's central directory was, followed by a new central directory, so page entries are never rewritten or recompressed and only image headers are read. This costs the copy plus a few KB, whatever the size of the book. A replaced `ComicInfo.xml` keeps its name and timestamp; its old bytes stay in the file, unreferenced (a reader that ignores the central directory and scans the file front to back may still see the old one).
+  - Page data already complete, or it can't be verified, or the archive can't be read or patched (e.g. an encrypted `ComicInfo.xml`): copied byte‑for‑byte.
 - PDF and EPUB are copied byte‑for‑byte.
 - Relative paths use `os.path.relpath` for robustness; zip arcnames use forward slashes.
 - Dry‑run skips file system writes but will still walk the tree and plan actions.
+
+### In‑place mode
+
+`--in-place` brings an existing tree up to the same state a copy would have, without a second copy of it:
+
+- `.cbz` books whose `ComicInfo.xml` is missing page data, or has stale page data, are patched in place (see above), keeping their modification time. Books already up to date are only read, never written.
+- `.zip` books are renamed to `.cbz`.
+- `.cbr/.rar/.cb7/.7z` books are repacked as `.cbz` next to the original, and the original is deleted once the `.cbz` is in place.
+- A book's real type is detected from its contents, not its name, so a `.cbz` that is really a RAR is repacked rather than treated as broken.
+- Unreadable books — not a zip, RAR or 7z at all (including empty and truncated files), or a corrupt RAR/7z — are moved to the trash folder. The trash is found, not configured: it is `Sys/DeleteQ` in SRC or the nearest folder above SRC that has one (the library root), so the same command works through a share (`H:\Library` finds `H:\Sys\DeleteQ`) and on the NAS (`/volume1/comics/Library` finds `/volume1/comics/Sys/DeleteQ`). If there is none, the run refuses to start rather than invent a trash; `--trash PATH` overrides discovery. Trashed books keep their path below the library root, so `H:\Library\X\b.cbz` goes to `H:\Sys\DeleteQ\Library\X\b.cbz` whichever folder the run started from, and the layout is the same from either machine. Nothing is deleted outright; a name already in the trash gets a ` (1)` suffix. The trash folder is skipped when walking SRC.
+- A 7z that is encrypted or uses an unsupported compression method is left as it is.
+- When the `.cbz` name is already taken by another file, the book is left alone with a warning, unless `--replace` is given.
+- PDF and EPUB books are left as they are.
+- Repacked books are built as a `.part` file next to the book and renamed over it. Before a book is patched, the bytes the patch will overwrite (its central directory, usually a few KB) are saved beside the journal: a patch that fails is undone at once, and one cut short by a crash or power loss is undone at the start of the next run.
+- A book that fails (I/O error, permissions, ...) is logged and the run carries on; the exit code is 1 if any book failed.
+- The run ends with a count of books that were current, unverified (page data cannot safely be written - see the warnings), updated, converted, trashed, kept, skipped, failed and journaled.
+
+#### Resume journal
+
+In‑place runs keep a journal: one JSON line per finished book with its size and modification time. It is found the same way as the trash, as `Sys/cbrXz_journal.jsonl` in the library root (`H:\Sys\cbrXz_journal.jsonl`, `/volume1/comics/Sys/cbrXz_journal.jsonl`); `--journal PATH` overrides that. Without a library root, give both `--trash` and `--journal`. A rerun skips a book whose size and mtime still match without opening it, so an interrupted run picks up where it stopped and later runs only look at new or changed books. Paths are stored relative to the library root with forward slashes, so one journal is shared by runs started from any folder in the library, through the share or on the server itself. Delete the journal to have every book checked again (e.g. after upgrading cbrXz). `--dry-run` reads the journal but never writes it.
+
+```pwsh
+python cbrXz.py "H:\Library" --in-place --dry-run   # see what would change
+python cbrXz.py "H:\Library" --in-place
+python3 cbrXz.py /volume1/comics/Library --in-place   # on the NAS - finds /volume1/comics/Sys/DeleteQ
+```
 
 ## Examples
 
