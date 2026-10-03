@@ -9,6 +9,17 @@ import pytest
 from PIL import Image
 
 
+@pytest.fixture
+def run_cli(run_cli, tmp_path):
+    """run_cli that never lets an in-place test reach the real default trash."""
+    def _run(args, cwd=None):
+        args = list(args)
+        if "--in-place" in args and "--trash" not in args and "--dry-run" not in args:
+            args += ["--trash", tmp_path / "trash"]
+        return run_cli(args, cwd)
+    return _run
+
+
 def make_book(path: Path, tmp_path: Path, comicinfo: bytes = None) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(path, "w") as zf:
@@ -56,7 +67,8 @@ def test_in_place_updates_books_and_trashes_unreadable(tmp_path, run_cli):
     assert not renamed.exists()
     assert page_heights(src / "a" / "renamed.cbz") == ["45", "45"]
     assert not broken.exists()
-    assert (src / "_trash" / "a" / "broken.cbz").read_bytes() == b"not an archive at all"
+    # keeps its path below the folder the trash and the tree share
+    assert (tmp_path / "trash" / "src" / "a" / "broken.cbz").read_bytes() == b"not an archive at all"
     assert pdf.read_bytes() == pdf_bytes
     assert not list(src.rglob("*.part"))
 
@@ -97,7 +109,7 @@ def test_in_place_does_not_overwrite_existing_cbz(tmp_path, run_cli):
     assert proc.returncode == 0, proc.stderr or proc.stdout
     assert (src / "book.cb7").exists()
     # the existing (unreadable) book.cbz is trashed, the .cb7 left for a rerun
-    assert (src / "_trash" / "book.cbz").read_bytes() == b"keep me"
+    assert (tmp_path / "trash" / "src" / "book.cbz").read_bytes() == b"keep me"
 
 
 @pytest.mark.integration
@@ -115,7 +127,7 @@ def test_in_place_custom_trash_and_dry_run(tmp_path, run_cli):
 
     proc = run_cli([src, "--in-place", "--trash", trash])
     assert proc.returncode == 0, proc.stderr or proc.stdout
-    assert (trash / "broken.cbr").read_bytes() == b"junk"
+    assert (trash / "src" / "broken.cbr").read_bytes() == b"junk"
     assert page_heights(stale) == ["45", "45"]
 
 
@@ -212,3 +224,17 @@ def test_in_place_carries_on_past_a_failing_book(tmp_path, run_cli):
     assert proc.returncode == 1
     assert "cannot process" in proc.stderr
     assert page_heights(src / "b.cbz") == ["45", "45"]
+
+
+def test_in_place_default_trash(tmp_path, run_cli):
+    import cbrXz
+
+    src = tmp_path / "src"
+    make_book(src / "book.cbz", tmp_path)
+    proc = run_cli([src, "--in-place", "--dry-run"])  # a dry run, so the real trash is never touched
+    if os.name == "nt":
+        assert proc.returncode == 0, proc.stderr or proc.stdout
+        assert "trash: " + cbrXz.DEFAULT_TRASH in proc.stderr
+    else:
+        assert proc.returncode != 0
+        assert "needs --trash" in proc.stderr + proc.stdout

@@ -20,6 +20,9 @@ from PIL import Image
 # moved logging configuration into main; keep module-level logger
 logger = logging.getLogger(__name__)
 
+# Where --in-place moves unreadable books unless --trash says otherwise (Windows only)
+DEFAULT_TRASH = r'H:\Sys\DeleteQ'
+
 BOOK_TYPES = ['.cbr', '.rar', '.cbz', '.zip', '.cb7', '.7z', '.pdf', '.epub']
 # Books extracted and repacked as .cbz
 REPACK_TYPES = ['.cbr', '.rar', '.cb7', '.7z']
@@ -700,7 +703,7 @@ def inPlaceBook(book: str, book_t: str, trash_dir: str, replace: bool, dryrun: b
 @click.option('-F', '--replace', is_flag=True, help='Overwrite existing destination files')
 @click.option('-N', '--dry-run', 'dryrun', is_flag=True, help='Plan actions but do not write outputs')
 @click.option('-i', '--in-place', 'in_place', is_flag=True, help='Process SRC where it lies instead of writing to DST')
-@click.option('--trash', required=False, type=click.Path(file_okay=False, path_type=str), help='Where --in-place moves unreadable books (default: SRC/_trash)')
+@click.option('--trash', required=False, type=click.Path(file_okay=False, path_type=str), help='Where --in-place moves unreadable books (default on Windows: ' + DEFAULT_TRASH.replace('%', '%%') + ')')
 @click.option('--journal', 'journal_path', required=False, type=click.Path(dir_okay=False, path_type=str), help='Record of books --in-place has finished, so a rerun skips them (default: SRC/_cbrXz_journal.jsonl)')
 @click.option('--log-level', default='INFO', type=click.Choice(['CRITICAL','ERROR','WARNING','INFO','DEBUG','NOTSET'], case_sensitive=False), help='Logging verbosity')
 def main(src, dst, root, replace, dryrun, in_place, trash, journal_path, log_level):
@@ -739,7 +742,11 @@ def main(src, dst, root, replace, dryrun, in_place, trash, journal_path, log_lev
             raise click.ClickException(f"Cannot create destination directory: {destination} ({e})")
     if in_place:
         tree = source if os.path.isdir(source) else os.path.dirname(source)
-        trash = os.path.abspath(trash or os.path.join(tree, '_trash'))
+        if trash is None:
+            if os.name != 'nt':
+                raise click.UsageError("--in-place needs --trash here (the default {} is a Windows path)".format(DEFAULT_TRASH))
+            trash = DEFAULT_TRASH
+        trash = os.path.abspath(trash)
         journal_path = os.path.abspath(journal_path or os.path.join(tree, '_cbrXz_journal.jsonl'))
 
     logger.debug("source: %s", source)
@@ -785,6 +792,14 @@ def main(src, dst, root, replace, dryrun, in_place, trash, journal_path, log_lev
 
     # Determine base for relative paths (handles file vs dir sources)
     rel_base = source if os.path.isdir(source) else os.path.dirname(source)
+    if in_place:
+        # trashed books keep their path below the folder the trash and the tree share,
+        # e.g. H:\Library\X\b.cbz -> H:\Sys\DeleteQ\Library\X\b.cbz, whatever SRC is
+        try:
+            trash_base = os.path.commonpath([trash, rel_base])
+        except ValueError:
+            trash_base = rel_base  # different drives
+        logger.info("trash: %s", trash)
 
     logger.info("beginning - %d books of %d files.", book_count, total)
     logger.debug("----")
@@ -820,7 +835,7 @@ def main(src, dst, root, replace, dryrun, in_place, trash, journal_path, log_lev
         logger.debug("          book_t: %s", book_t)
         if in_place:
             try:
-                outcome, now = inPlaceBook(book, book_t, os.path.join(trash, book_p), replace, dryrun, journal)
+                outcome, now = inPlaceBook(book, book_t, os.path.join(trash, os.path.relpath(os.path.dirname(book), start=trash_base)), replace, dryrun, journal)
                 if now is not None and not dryrun:
                     journal.record(os.path.relpath(now, start=rel_base).replace(os.sep, '/'), now, outcome)
             except JournalError:
