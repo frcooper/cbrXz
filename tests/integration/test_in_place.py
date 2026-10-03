@@ -11,10 +11,12 @@ from PIL import Image
 
 @pytest.fixture
 def run_cli(run_cli, tmp_path):
-    """run_cli that never lets an in-place test reach the real default trash."""
+    """run_cli that gives in-place runs a trash of their own, unless asked to discover one."""
     def _run(args, cwd=None):
         args = list(args)
-        if "--in-place" in args and "--trash" not in args and "--dry-run" not in args:
+        if "--discover-trash" in args:
+            args.remove("--discover-trash")  # the test made its own Sys/DeleteQ to find
+        elif "--in-place" in args and "--trash" not in args:
             args += ["--trash", tmp_path / "trash"]
         return run_cli(args, cwd)
     return _run
@@ -226,15 +228,31 @@ def test_in_place_carries_on_past_a_failing_book(tmp_path, run_cli):
     assert page_heights(src / "b.cbz") == ["45", "45"]
 
 
-def test_in_place_default_trash(tmp_path, run_cli):
+@pytest.mark.integration
+def test_in_place_finds_trash_above_the_tree(tmp_path, run_cli):
+    lib = tmp_path / "lib"
+    (lib / "Sys" / "DeleteQ").mkdir(parents=True)
+    src = lib / "Library" / "Marvel"
+    broken = src / "X" / "broken.cbz"
+    broken.parent.mkdir(parents=True)
+    broken.write_bytes(b"junk")
+
+    # run on a folder deep in the library: the trash is still found, and the
+    # book keeps its path below the library root
+    proc = run_cli([src, "--in-place", "--discover-trash"])
+    assert proc.returncode == 0, proc.stderr or proc.stdout
+    assert (lib / "Sys" / "DeleteQ" / "Library" / "Marvel" / "X" / "broken.cbz").read_bytes() == b"junk"
+
+
+def test_in_place_without_a_trash_refuses_to_start(tmp_path, run_cli):
     import cbrXz
 
     src = tmp_path / "src"
-    make_book(src / "book.cbz", tmp_path)
-    proc = run_cli([src, "--in-place", "--dry-run"])  # a dry run, so the real trash is never touched
-    if os.name == "nt":
-        assert proc.returncode == 0, proc.stderr or proc.stdout
-        assert "trash: " + cbrXz.DEFAULT_TRASH in proc.stderr
-    else:
-        assert proc.returncode != 0
-        assert "needs --trash" in proc.stderr + proc.stdout
+    book = make_book(src / "book.cbz", tmp_path, b"<ComicInfo/>")
+    if cbrXz.findTrash(str(src))[0] is not None:
+        pytest.skip("a Sys/DeleteQ folder exists above the temp dir")
+    before = book.read_bytes()
+    proc = run_cli([src, "--in-place", "--discover-trash"])
+    assert proc.returncode != 0
+    assert "create one or give --trash" in proc.stderr + proc.stdout
+    assert book.read_bytes() == before

@@ -55,7 +55,7 @@ python cbrXz.py SRC --in-place [options]
 - `-F, --replace`             Overwrite existing destination files
 - `-N, --dry-run`             Log actions but do not write outputs
 - `-i, --in-place`            Process SRC where it lies instead of writing to DST (see below)
-- `--trash PATH`              Where `--in-place` moves unreadable books (default on Windows: `H:\Sys\DeleteQ`; required elsewhere)
+- `--trash PATH`              Where `--in-place` moves unreadable books (default: `Sys/DeleteQ` in SRC or the nearest folder above it)
 - `--journal PATH`            Record of books `--in-place` has finished (default: `SRC/_cbrXz_journal.jsonl`)
 - `--root PATH`               Treat PATH as the source root when computing relative paths
 - `--log-level {ERROR,WARNING,INFO,DEBUG}`  Set logging verbosity (default: INFO)
@@ -93,7 +93,7 @@ python cbrXz.py SRC --in-place [options]
 - `.zip` books are renamed to `.cbz`.
 - `.cbr/.rar/.cb7/.7z` books are repacked as `.cbz` next to the original, and the original is deleted once the `.cbz` is in place.
 - A book's real type is detected from its contents, not its name, so a `.cbz` that is really a RAR is repacked rather than treated as broken.
-- Unreadable books — not a zip, RAR or 7z at all (including empty and truncated files), or a corrupt RAR/7z — are moved to the trash folder (`--trash`, default `H:\Sys\DeleteQ` on Windows), keeping their path below the folder the trash and the tree share: `H:\Library\X\b.cbz` goes to `H:\Sys\DeleteQ\Library\X\b.cbz` whether SRC is `H:\` or `H:\Library\X`. On the NAS, `--trash /volume1/comics/Sys/DeleteQ` gives the same layout. Nothing is deleted outright; a name already in the trash gets a ` (1)` suffix. The trash folder is skipped when walking SRC.
+- Unreadable books — not a zip, RAR or 7z at all (including empty and truncated files), or a corrupt RAR/7z — are moved to the trash folder. The trash is found, not configured: it is `Sys/DeleteQ` in SRC or the nearest folder above SRC that has one (the library root), so the same command works through a share (`H:\Library` finds `H:\Sys\DeleteQ`) and on the NAS (`/volume1/comics/Library` finds `/volume1/comics/Sys/DeleteQ`). If there is none, the run refuses to start rather than invent a trash; `--trash PATH` overrides discovery. Trashed books keep their path below the library root, so `H:\Library\X\b.cbz` goes to `H:\Sys\DeleteQ\Library\X\b.cbz` whichever folder the run started from, and the layout is the same from either machine. Nothing is deleted outright; a name already in the trash gets a ` (1)` suffix. The trash folder is skipped when walking SRC.
 - A 7z that is encrypted or uses an unsupported compression method is left as it is.
 - When the `.cbz` name is already taken by another file, the book is left alone with a warning, unless `--replace` is given.
 - PDF and EPUB books are left as they are.
@@ -108,7 +108,7 @@ In‑place runs keep a journal (`--journal PATH`, default `SRC/_cbrXz_journal.js
 ```pwsh
 python cbrXz.py "H:\Library" --in-place --dry-run   # see what would change
 python cbrXz.py "H:\Library" --in-place
-python3 cbrXz.py /volume1/comics/Library --in-place --trash /volume1/comics/Sys/DeleteQ   # on the NAS
+python3 cbrXz.py /volume1/comics/Library --in-place   # on the NAS - finds /volume1/comics/Sys/DeleteQ
 ```
 
 ## Examples

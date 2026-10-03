@@ -20,8 +20,9 @@ from PIL import Image
 # moved logging configuration into main; keep module-level logger
 logger = logging.getLogger(__name__)
 
-# Where --in-place moves unreadable books unless --trash says otherwise (Windows only)
-DEFAULT_TRASH = r'H:\Sys\DeleteQ'
+# Where --in-place moves unreadable books unless --trash says otherwise: this folder,
+# in SRC or the nearest folder above it that has one (the library root)
+TRASH_DIR = os.path.join('Sys', 'DeleteQ')
 
 BOOK_TYPES = ['.cbr', '.rar', '.cbz', '.zip', '.cb7', '.7z', '.pdf', '.epub']
 # Books extracted and repacked as .cbz
@@ -620,6 +621,20 @@ def sniffArchive(book: str):
         pass
     return None
 
+def findTrash(start: str) -> tuple:
+    """Return (trash, root): TRASH_DIR in start or the nearest folder above it that
+    has one, and that folder. (None, None) if there is none.
+    """
+    d = os.path.abspath(start)
+    while True:
+        trash = os.path.join(d, TRASH_DIR)
+        if os.path.isdir(trash):
+            return trash, d
+        parent = os.path.dirname(d)
+        if parent == d:
+            return None, None
+        d = parent
+
 def trashBook(book: str, trash_dir: str, book_f: str, dryrun: bool) -> str:
     """Move an unreadable book into trash_dir, never overwriting what is already there."""
     base, ext = os.path.splitext(os.path.join(trash_dir, os.path.basename(book)))
@@ -703,7 +718,7 @@ def inPlaceBook(book: str, book_t: str, trash_dir: str, replace: bool, dryrun: b
 @click.option('-F', '--replace', is_flag=True, help='Overwrite existing destination files')
 @click.option('-N', '--dry-run', 'dryrun', is_flag=True, help='Plan actions but do not write outputs')
 @click.option('-i', '--in-place', 'in_place', is_flag=True, help='Process SRC where it lies instead of writing to DST')
-@click.option('--trash', required=False, type=click.Path(file_okay=False, path_type=str), help='Where --in-place moves unreadable books (default on Windows: ' + DEFAULT_TRASH.replace('%', '%%') + ')')
+@click.option('--trash', required=False, type=click.Path(file_okay=False, path_type=str), help='Where --in-place moves unreadable books (default: Sys/DeleteQ in SRC or the nearest folder above it)')
 @click.option('--journal', 'journal_path', required=False, type=click.Path(dir_okay=False, path_type=str), help='Record of books --in-place has finished, so a rerun skips them (default: SRC/_cbrXz_journal.jsonl)')
 @click.option('--log-level', default='INFO', type=click.Choice(['CRITICAL','ERROR','WARNING','INFO','DEBUG','NOTSET'], case_sensitive=False), help='Logging verbosity')
 def main(src, dst, root, replace, dryrun, in_place, trash, journal_path, log_level):
@@ -743,10 +758,11 @@ def main(src, dst, root, replace, dryrun, in_place, trash, journal_path, log_lev
     if in_place:
         tree = source if os.path.isdir(source) else os.path.dirname(source)
         if trash is None:
-            if os.name != 'nt':
-                raise click.UsageError("--in-place needs --trash here (the default {} is a Windows path)".format(DEFAULT_TRASH))
-            trash = DEFAULT_TRASH
-        trash = os.path.abspath(trash)
+            trash, trash_base = findTrash(tree)
+            if trash is None:
+                raise click.UsageError(f"no {TRASH_DIR} folder in {tree} or above it - create one or give --trash")
+        else:
+            trash, trash_base = os.path.abspath(trash), None
         journal_path = os.path.abspath(journal_path or os.path.join(tree, '_cbrXz_journal.jsonl'))
 
     logger.debug("source: %s", source)
@@ -793,12 +809,15 @@ def main(src, dst, root, replace, dryrun, in_place, trash, journal_path, log_lev
     # Determine base for relative paths (handles file vs dir sources)
     rel_base = source if os.path.isdir(source) else os.path.dirname(source)
     if in_place:
-        # trashed books keep their path below the folder the trash and the tree share,
-        # e.g. H:\Library\X\b.cbz -> H:\Sys\DeleteQ\Library\X\b.cbz, whatever SRC is
-        try:
-            trash_base = os.path.commonpath([trash, rel_base])
-        except ValueError:
-            trash_base = rel_base  # different drives
+        # trashed books keep their path below the library root (the folder holding
+        # Sys/DeleteQ), e.g. H:\Library\X\b.cbz -> H:\Sys\DeleteQ\Library\X\b.cbz and
+        # /volume1/comics/Library/X/b.cbz -> /volume1/comics/Sys/DeleteQ/Library/X/b.cbz.
+        # A --trash elsewhere uses the folder it shares with the tree.
+        if trash_base is None:
+            try:
+                trash_base = os.path.commonpath([trash, rel_base])
+            except ValueError:
+                trash_base = rel_base  # different drives
         logger.info("trash: %s", trash)
 
     logger.info("beginning - %d books of %d files.", book_count, total)
