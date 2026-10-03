@@ -20,9 +20,12 @@ from PIL import Image
 # moved logging configuration into main; keep module-level logger
 logger = logging.getLogger(__name__)
 
-# Where --in-place moves unreadable books unless --trash says otherwise: this folder,
-# in SRC or the nearest folder above it that has one (the library root)
-TRASH_DIR = os.path.join('Sys', 'DeleteQ')
+# --in-place finds the library root as SRC or the nearest folder above it that has a
+# TRASH_DIR. Unless --trash/--journal say otherwise, unreadable books are moved to that
+# TRASH_DIR and finished books recorded in JOURNAL_NAME in its SYS_DIR.
+SYS_DIR = 'Sys'
+TRASH_DIR = os.path.join(SYS_DIR, 'DeleteQ')
+JOURNAL_NAME = 'cbrXz_journal.jsonl'
 
 BOOK_TYPES = ['.cbr', '.rar', '.cbz', '.zip', '.cb7', '.7z', '.pdf', '.epub']
 # Books extracted and repacked as .cbz
@@ -621,18 +624,17 @@ def sniffArchive(book: str):
         pass
     return None
 
-def findTrash(start: str) -> tuple:
-    """Return (trash, root): TRASH_DIR in start or the nearest folder above it that
-    has one, and that folder. (None, None) if there is none.
+def findLibraryRoot(start: str):
+    """Return the library root: start or the nearest folder above it that has a
+    TRASH_DIR. None if there is none.
     """
     d = os.path.abspath(start)
     while True:
-        trash = os.path.join(d, TRASH_DIR)
-        if os.path.isdir(trash):
-            return trash, d
+        if os.path.isdir(os.path.join(d, TRASH_DIR)):
+            return d
         parent = os.path.dirname(d)
         if parent == d:
-            return None, None
+            return None
         d = parent
 
 def trashBook(book: str, trash_dir: str, book_f: str, dryrun: bool) -> str:
@@ -719,7 +721,7 @@ def inPlaceBook(book: str, book_t: str, trash_dir: str, replace: bool, dryrun: b
 @click.option('-N', '--dry-run', 'dryrun', is_flag=True, help='Plan actions but do not write outputs')
 @click.option('-i', '--in-place', 'in_place', is_flag=True, help='Process SRC where it lies instead of writing to DST')
 @click.option('--trash', required=False, type=click.Path(file_okay=False, path_type=str), help='Where --in-place moves unreadable books (default: Sys/DeleteQ in SRC or the nearest folder above it)')
-@click.option('--journal', 'journal_path', required=False, type=click.Path(dir_okay=False, path_type=str), help='Record of books --in-place has finished, so a rerun skips them (default: SRC/_cbrXz_journal.jsonl)')
+@click.option('--journal', 'journal_path', required=False, type=click.Path(dir_okay=False, path_type=str), help='Record of books --in-place has finished, so a rerun skips them (default: Sys/cbrXz_journal.jsonl beside Sys/DeleteQ)')
 @click.option('--log-level', default='INFO', type=click.Choice(['CRITICAL','ERROR','WARNING','INFO','DEBUG','NOTSET'], case_sensitive=False), help='Logging verbosity')
 def main(src, dst, root, replace, dryrun, in_place, trash, journal_path, log_level):
     # cfg = {}
@@ -757,13 +759,17 @@ def main(src, dst, root, replace, dryrun, in_place, trash, journal_path, log_lev
             raise click.ClickException(f"Cannot create destination directory: {destination} ({e})")
     if in_place:
         tree = source if os.path.isdir(source) else os.path.dirname(source)
+        lib_root = findLibraryRoot(tree)
+        if lib_root is None and (trash is None or journal_path is None):
+            raise click.UsageError(f"no {TRASH_DIR} folder in {tree} or above it - create one or give --trash and --journal")
         if trash is None:
-            trash, trash_base = findTrash(tree)
-            if trash is None:
-                raise click.UsageError(f"no {TRASH_DIR} folder in {tree} or above it - create one or give --trash")
+            trash, trash_base = os.path.join(lib_root, TRASH_DIR), lib_root
         else:
             trash, trash_base = os.path.abspath(trash), None
-        journal_path = os.path.abspath(journal_path or os.path.join(tree, '_cbrXz_journal.jsonl'))
+        journal_path = os.path.abspath(journal_path or os.path.join(lib_root, SYS_DIR, JOURNAL_NAME))
+        # journal keys are relative to the library root, so runs started from any
+        # folder in it - or on another machine - share one journal
+        journal_base = lib_root or tree
 
     logger.debug("source: %s", source)
     logger.debug("destination: %s", destination)
@@ -836,7 +842,7 @@ def main(src, dst, root, replace, dryrun, in_place, trash, journal_path, log_lev
         logger.info("journal: %s (%d books recorded)", journal_path, len(journal.done))
     for book in books:
         if in_place:
-            rel = os.path.relpath(book, start=rel_base).replace(os.sep, '/')
+            rel = os.path.relpath(book, start=journal_base).replace(os.sep, '/')
             if journal.isDone(rel, book):
                 logger.debug("unchanged since recorded - skipping %s", book)
                 outcomes['journaled'] = outcomes.get('journaled', 0) + 1
@@ -856,7 +862,7 @@ def main(src, dst, root, replace, dryrun, in_place, trash, journal_path, log_lev
             try:
                 outcome, now = inPlaceBook(book, book_t, os.path.join(trash, os.path.relpath(os.path.dirname(book), start=trash_base)), replace, dryrun, journal)
                 if now is not None and not dryrun:
-                    journal.record(os.path.relpath(now, start=rel_base).replace(os.sep, '/'), now, outcome)
+                    journal.record(os.path.relpath(now, start=journal_base).replace(os.sep, '/'), now, outcome)
             except JournalError:
                 raise
             except Exception as e:  # pylint: disable=broad-except

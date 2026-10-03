@@ -11,13 +11,17 @@ from PIL import Image
 
 @pytest.fixture
 def run_cli(run_cli, tmp_path):
-    """run_cli that gives in-place runs a trash of their own, unless asked to discover one."""
+    """run_cli that gives in-place runs a trash and journal of their own, unless
+    asked to discover them, so a test never reaches a real library."""
     def _run(args, cwd=None):
         args = list(args)
-        if "--discover-trash" in args:
-            args.remove("--discover-trash")  # the test made its own Sys/DeleteQ to find
-        elif "--in-place" in args and "--trash" not in args:
-            args += ["--trash", tmp_path / "trash"]
+        if "--discover" in args:
+            args.remove("--discover")  # the test made its own Sys/DeleteQ to find
+        elif "--in-place" in args:
+            if "--trash" not in args:
+                args += ["--trash", tmp_path / "trash"]
+            if "--journal" not in args:
+                args += ["--journal", tmp_path / "journal.jsonl"]
         return run_cli(args, cwd)
     return _run
 
@@ -153,10 +157,10 @@ def test_in_place_journal_skips_finished_books(tmp_path, run_cli):
     a = make_book(src / "a.cbz", tmp_path, b"<ComicInfo/>")
     b = make_book(src / "b.cbz", tmp_path)
     assert run_cli([src, "--in-place"]).returncode == 0
-    journal = src / "_cbrXz_journal.jsonl"
+    journal = tmp_path / "journal.jsonl"
     recs = [json.loads(l) for l in journal.read_text().splitlines()]
     assert {r["book"]: r["outcome"] for r in recs if "book" in r} == {"a.cbz": "updated", "b.cbz": "updated"}
-    assert not (src / "_cbrXz_journal.jsonl.tail").exists()
+    assert not (tmp_path / "journal.jsonl.tail").exists()
 
     # a changed book is looked at again, an unchanged one is not even opened
     make_book(b, tmp_path)
@@ -174,7 +178,7 @@ def test_in_place_undoes_an_interrupted_patch(tmp_path, run_cli):
     book = make_book(src / "book.cbz", tmp_path, b"<ComicInfo/>")
     original = book.read_bytes()
     st = os.stat(book)
-    journal = cbrXz.Journal(str(src / "_cbrXz_journal.jsonl"), False)
+    journal = cbrXz.Journal(str(tmp_path / "journal.jsonl"), False)
     with zipfile.ZipFile(book) as zf:
         start = zf.start_dir
     journal.beginPatch(str(book), start, original[start:], st)
@@ -193,7 +197,7 @@ def test_in_place_undoes_an_interrupted_patch(tmp_path, run_cli):
     assert proc.returncode == 0, proc.stderr or proc.stdout
     assert "undoing the interrupted patch" in proc.stderr
     assert page_heights(book) == ["45", "45"]
-    assert not (src / "_cbrXz_journal.jsonl.tail").exists()
+    assert not (tmp_path / "journal.jsonl.tail").exists()
 
 
 def test_failed_patch_is_undone(tmp_path, monkeypatch):
@@ -229,19 +233,27 @@ def test_in_place_carries_on_past_a_failing_book(tmp_path, run_cli):
 
 
 @pytest.mark.integration
-def test_in_place_finds_trash_above_the_tree(tmp_path, run_cli):
+def test_in_place_finds_trash_and_journal_above_the_tree(tmp_path, run_cli):
     lib = tmp_path / "lib"
     (lib / "Sys" / "DeleteQ").mkdir(parents=True)
     src = lib / "Library" / "Marvel"
     broken = src / "X" / "broken.cbz"
     broken.parent.mkdir(parents=True)
     broken.write_bytes(b"junk")
+    good = make_book(src / "X" / "good.cbz", tmp_path)
 
-    # run on a folder deep in the library: the trash is still found, and the
-    # book keeps its path below the library root
-    proc = run_cli([src, "--in-place", "--discover-trash"])
+    # run on a folder deep in the library: the trash and journal are still found,
+    # and paths in both are below the library root
+    proc = run_cli([src, "--in-place", "--discover"])
     assert proc.returncode == 0, proc.stderr or proc.stdout
     assert (lib / "Sys" / "DeleteQ" / "Library" / "Marvel" / "X" / "broken.cbz").read_bytes() == b"junk"
+    recs = [json.loads(l) for l in (lib / "Sys" / "cbrXz_journal.jsonl").read_text().splitlines()]
+    assert [r["book"] for r in recs if "book" in r] == ["Library/Marvel/X/good.cbz"]
+
+    # a run from the library root shares that journal
+    proc = run_cli([lib, "--in-place", "--discover"])
+    assert proc.returncode == 0, proc.stderr or proc.stdout
+    assert "1 journaled" in proc.stderr
 
 
 def test_in_place_without_a_trash_refuses_to_start(tmp_path, run_cli):
@@ -249,10 +261,10 @@ def test_in_place_without_a_trash_refuses_to_start(tmp_path, run_cli):
 
     src = tmp_path / "src"
     book = make_book(src / "book.cbz", tmp_path, b"<ComicInfo/>")
-    if cbrXz.findTrash(str(src))[0] is not None:
+    if cbrXz.findLibraryRoot(str(src)) is not None:
         pytest.skip("a Sys/DeleteQ folder exists above the temp dir")
     before = book.read_bytes()
-    proc = run_cli([src, "--in-place", "--discover-trash"])
+    proc = run_cli([src, "--in-place", "--discover"])
     assert proc.returncode != 0
-    assert "create one or give --trash" in proc.stderr + proc.stdout
+    assert "create one or give --trash and --journal" in proc.stderr + proc.stdout
     assert book.read_bytes() == before

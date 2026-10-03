@@ -56,7 +56,7 @@ python cbrXz.py SRC --in-place [options]
 - `-N, --dry-run`             Log actions but do not write outputs
 - `-i, --in-place`            Process SRC where it lies instead of writing to DST (see below)
 - `--trash PATH`              Where `--in-place` moves unreadable books (default: `Sys/DeleteQ` in SRC or the nearest folder above it)
-- `--journal PATH`            Record of books `--in-place` has finished (default: `SRC/_cbrXz_journal.jsonl`)
+- `--journal PATH`            Record of books `--in-place` has finished (default: `Sys/cbrXz_journal.jsonl` beside `Sys/DeleteQ`)
 - `--root PATH`               Treat PATH as the source root when computing relative paths
 - `--log-level {ERROR,WARNING,INFO,DEBUG}`  Set logging verbosity (default: INFO)
 - `-V, --version`             Print release tag (vX.Y.Z) and exit
@@ -103,7 +103,7 @@ python cbrXz.py SRC --in-place [options]
 
 #### Resume journal
 
-In‑place runs keep a journal (`--journal PATH`, default `SRC/_cbrXz_journal.jsonl`): one JSON line per finished book with its size and modification time. A rerun skips a book whose size and mtime still match without opening it, so an interrupted run picks up where it stopped and later runs only look at new or changed books. Paths are stored relative to SRC with forward slashes, so one journal works whether the tree is reached through a share or on the server itself. Delete the journal to have every book checked again (e.g. after upgrading cbrXz). `--dry-run` reads the journal but never writes it.
+In‑place runs keep a journal: one JSON line per finished book with its size and modification time. It is found the same way as the trash, as `Sys/cbrXz_journal.jsonl` in the library root (`H:\Sys\cbrXz_journal.jsonl`, `/volume1/comics/Sys/cbrXz_journal.jsonl`); `--journal PATH` overrides that. Without a library root, give both `--trash` and `--journal`. A rerun skips a book whose size and mtime still match without opening it, so an interrupted run picks up where it stopped and later runs only look at new or changed books. Paths are stored relative to the library root with forward slashes, so one journal is shared by runs started from any folder in the library, through the share or on the server itself. Delete the journal to have every book checked again (e.g. after upgrading cbrXz). `--dry-run` reads the journal but never writes it.
 
 ```pwsh
 python cbrXz.py "H:\Library" --in-place --dry-run   # see what would change
