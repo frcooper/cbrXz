@@ -158,11 +158,12 @@ def pageOrder(entries) -> list:
         raise PageDataError("page names sort differently in plain and natural order")
     return pages
 
-def checkPage(el, info: dict) -> bool:
+def checkPage(el, info: dict) -> tuple:
     """Compare an existing <Page> to the image it claims to describe.
-    Raises PageDataError on any mismatch; returns True if anything matched.
+    Returns (matched, stale): whether any attribute agreed with the image, and
+    the attributes that disagree with it.
     """
-    matched = False
+    matched, stale = False, []
     for k in INT_ATTRS + STR_ATTRS:
         v = el.get(k)
         if v is None or k not in info:
@@ -171,18 +172,22 @@ def checkPage(el, info: dict) -> bool:
             same = int(v) == int(info[k]) if k in INT_ATTRS else v.strip().lower() == info[k].lower()
         except ValueError:
             same = False
-        if not same:
-            raise PageDataError(f"page {el.get('Image')} has {k}={v}, image has {info[k]}")
-        matched = True
-    return matched
+        if same:
+            matched = True
+        else:
+            stale.append(k)
+    return matched, stale
 
-def updateComicInfo(xml, entries):
+def updateComicInfo(xml, entries, book_f: str = None):
     """Fill in missing page data in a ComicInfo.xml document.
     xml is the existing document as bytes, or None to create one.
     entries is [(arcname, size, opener)] for every file in the archive.
-    Existing values are never overwritten. Returns the new document as
-    bytes, or None if nothing needed to change. Raises PageDataError if the
-    data cannot be guaranteed to land on the right pages.
+    book_f names the book in log messages.
+    Existing values are kept, except image attributes that contradict their
+    image when the existing <Page> entries cover every page (e.g. pages resized
+    after ComicInfo.xml was written); those are corrected. Returns the new
+    document as bytes, or None if nothing needed to change. Raises
+    PageDataError if the data cannot be guaranteed to land on the right pages.
     """
     root = ET.Element('ComicInfo') if xml is None else ET.fromstring(xml)
     changed = xml is None
@@ -200,6 +205,7 @@ def updateComicInfo(xml, entries):
 
     pages_el = root.find('Pages')
     by_index = {}
+    stale = {}
     corroborated = count_el is not None
     for el in [] if pages_el is None else pages_el.findall('Page'):
         try:
@@ -209,9 +215,27 @@ def updateComicInfo(xml, entries):
         if i in by_index or not 0 <= i < len(pages):
             raise PageDataError(f"page entry Image={i} is duplicated or out of range")
         by_index[i] = el
-        corroborated = checkPage(el, infos[i]) or corroborated
+        matched, bad = checkPage(el, infos[i])
+        corroborated = matched or corroborated
+        if bad:
+            stale[i] = bad
     if by_index and not corroborated:
         raise PageDataError("existing page entries cannot be matched to images")
+    if stale and len(by_index) != len(pages):
+        i, bad = next(iter(stale.items()))
+        raise PageDataError(f"page {i} has {bad[0]}={by_index[i].get(bad[0])}, image has {infos[i][bad[0]]}")
+    for i, bad in stale.items():
+        el, info = by_index[i], infos[i]
+        logger.info("EVENT: correcting page %d of %s: %s", i, book_f or 'ComicInfo.xml',
+                    ", ".join(f"{k} {el.get(k)} -> {info[k]}" for k in bad))
+        for k in bad:
+            el.set(k, info[k])
+        if 'ImageWidth' in bad or 'ImageHeight' in bad:
+            if 'DoublePage' in info:
+                el.set('DoublePage', info['DoublePage'])
+            elif 'DoublePage' in el.attrib:
+                del el.attrib['DoublePage']
+        changed = True
 
     if pages_el is None:
         pages_el = ET.Element('Pages')
@@ -251,7 +275,7 @@ def zipPageData(path: str, book_f: str) -> tuple:
             found = [i.filename for i in infos if os.path.basename(i.filename).lower() == 'comicinfo.xml']
             name = min(found, key=lambda n: (n.count('/'), n)) if found else None
             existing = zf.read(name) if name else None
-            return updateComicInfo(existing, [zipEntry(zf, i) for i in infos]), name
+            return updateComicInfo(existing, [zipEntry(zf, i) for i in infos], book_f), name
     except zipfile.BadZipFile:
         logger.warning("Not writing page data for %s - not a valid zip.", book_f)
     except ET.ParseError as e:
@@ -528,7 +552,7 @@ def main(src, dst, root, replace, dryrun, log_level):
                                     xml = f.read()
                             entries = [fileEntry(os.path.relpath(p, start=tmp_x_dir).replace(os.sep, '/'), p) for p in pages]
                             try:
-                                xml = updateComicInfo(xml, entries)
+                                xml = updateComicInfo(xml, entries, book_f)
                             except ET.ParseError as e:
                                 logger.warning("Cannot parse ComicInfo.xml in %s - leaving it unchanged.", book_f)
                                 logger.debug("parse error: %s", e)
