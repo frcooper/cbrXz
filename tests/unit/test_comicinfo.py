@@ -170,6 +170,30 @@ def test_matching_pagecount_corroborates_bare_entries(tmp_path):
     assert els[0].get('ImageWidth') == '40'
 
 
+def test_corrects_stale_values_when_entries_cover_every_page(tmp_path):
+    # e.g. pages resized after ComicInfo.xml was written
+    entries = entries_for(tmp_path, ['p00.png', 'p01.png'])
+    size = (tmp_path / 'p00.png').stat().st_size
+    existing = f"""<ComicInfo><PageCount>2</PageCount><Pages>
+<Page Image="0" ImageSize="1" ImageWidth="400" ImageHeight="300" DoublePage="true" Type="FrontCover" />
+<Page Image="1" ImageSize="{size}" Bookmark="b" />
+</Pages></ComicInfo>""".encode()
+    _, els = pages_of(cbrXz.updateComicInfo(existing, entries))
+    assert els[0].get('ImageSize') == str(size)
+    assert els[0].get('ImageWidth') == '40'
+    assert els[0].get('ImageHeight') == '60'
+    assert els[0].get('DoublePage') is None
+    assert els[0].get('Type') == 'FrontCover'
+    assert els[1].get('Bookmark') == 'b'
+
+
+def test_stale_values_without_corroboration_block_page_data(tmp_path):
+    entries = entries_for(tmp_path, ['p00.png', 'p01.png'])
+    existing = b'<ComicInfo><Pages><Page Image="0" ImageSize="1" /><Page Image="1" ImageSize="2" /></Pages></ComicInfo>'
+    with pytest.raises(cbrXz.PageDataError):
+        cbrXz.updateComicInfo(existing, entries)
+
+
 def test_findcomicinfo_prefers_shallowest(tmp_path):
     a = str(tmp_path / 'sub' / 'ComicInfo.xml')
     b = str(tmp_path / 'comicinfo.XML')
