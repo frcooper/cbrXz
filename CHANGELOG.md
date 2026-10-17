@@ -2,6 +2,31 @@
 
 <!-- version list -->
 
+## v1.5.0 (2026-10-17)
+
+### Bug Fixes
+
+- **inplace**: Keep a .cbz that was really a RAR/7z after converting it
+  ([`e2d53d6`](https://github.com/frcooper/cbrXz/commit/e2d53d668cb31ed859c4bf00d9ddc08a4cd28fb0))
+
+### Features
+
+- **cli**: Add --in-place mode to process an existing tree
+  ([`ff02302`](https://github.com/frcooper/cbrXz/commit/ff0230239905fe9c7307597fac03c1c2b3861f06))
+
+- **cli**: Default the in-place trash to H:\Sys\DeleteQ
+  ([`8275a6a`](https://github.com/frcooper/cbrXz/commit/8275a6aa50829b86fd41a5abf0c29cc29920ec29))
+
+- **cli**: Discover the in-place journal in the library's Sys folder
+  ([`bcf9cf0`](https://github.com/frcooper/cbrXz/commit/bcf9cf059a8d25db61fb858855a899b41745be2f))
+
+- **cli**: Discover the in-place trash instead of hard-coding it
+  ([`c7fab37`](https://github.com/frcooper/cbrXz/commit/c7fab378fac5d56e4b28b483bd20ead80ae0a493))
+
+- **zip**: Patch ComicInfo.xml in place and add a resume journal
+  ([`f1a1e7c`](https://github.com/frcooper/cbrXz/commit/f1a1e7c32868fc69aaa63bca98c8f4e68d56a8dd))
+
+
 ## v1.4.1 (2026-10-03)
 
 ### Bug Fixes
