@@ -1,12 +1,14 @@
 #! /usr/bin/python3
 
 import click
+import json
 import logging
 import os
 import py7zr
 import rarfile
 import shutil
 import tempfile
+import time
 import zipfile
 import re
 import xml.etree.ElementTree as ET
@@ -17,6 +19,13 @@ from PIL import Image
 
 # moved logging configuration into main; keep module-level logger
 logger = logging.getLogger(__name__)
+
+# --in-place finds the library root as SRC or the nearest folder above it that has a
+# TRASH_DIR. Unless --trash/--journal say otherwise, unreadable books are moved to that
+# TRASH_DIR and finished books recorded in JOURNAL_NAME in its SYS_DIR.
+SYS_DIR = 'Sys'
+TRASH_DIR = os.path.join(SYS_DIR, 'DeleteQ')
+JOURNAL_NAME = 'cbrXz_journal.jsonl'
 
 BOOK_TYPES = ['.cbr', '.rar', '.cbz', '.zip', '.cb7', '.7z', '.pdf', '.epub']
 # Books extracted and repacked as .cbz
@@ -268,6 +277,7 @@ def zipPageData(path: str, book_f: str) -> tuple:
     """Work out the page data a zip book needs.
     Returns (xml, name): the new ComicInfo.xml bytes (None if nothing should be
     written) and the name of the archive's existing ComicInfo.xml (None if it has none).
+    Raises zipfile.BadZipFile if the book cannot be read as a zip.
     """
     try:
         with zipfile.ZipFile(path) as zf:
@@ -276,64 +286,67 @@ def zipPageData(path: str, book_f: str) -> tuple:
             name = min(found, key=lambda n: (n.count('/'), n)) if found else None
             existing = zf.read(name) if name else None
             return updateComicInfo(existing, [zipEntry(zf, i) for i in infos], book_f), name
-    except zipfile.BadZipFile:
-        logger.warning("Not writing page data for %s - not a valid zip.", book_f)
     except ET.ParseError as e:
         logger.warning("Cannot parse ComicInfo.xml in %s - leaving it unchanged.", book_f)
         logger.debug("parse error: %s", e)
     except PageDataError as e:
         logger.warning("Not writing page data for %s - %s.", book_f, e)
+    except (RuntimeError, NotImplementedError) as e:
+        # an encrypted ComicInfo.xml, or one zipfile cannot decompress
+        logger.warning("Cannot read ComicInfo.xml in %s - leaving it unchanged.", book_f)
+        logger.debug("read error: %s", e)
     return None, None
 
-def rewriteZip(src: str, dst: str, name: str, data: bytes) -> None:
-    """Copy the zip at src to dst with the entry name's content replaced by data.
-    Entry order, names, timestamps and attributes are kept. Entries are stored,
-    as in repacked RARs: pages are already compressed images, and recompressing
-    them costs far more time than it saves space.
+def patchZip(path: str, name, data: bytes, before=None) -> None:
+    """Give the zip at path a ComicInfo.xml holding data, without rewriting it.
+    name is the existing ComicInfo.xml entry to replace, or None to add one.
+    The new entry (stored) is written over the old central directory, followed
+    by a new central directory, so the other entries are not touched and the
+    cost is a few KB whatever the size of the book. A replaced entry's data
+    stays in the file, unreferenced. before(start, tail), if given, is called
+    with the offset of the old central directory and the bytes from there to
+    the end of the file - everything the patch overwrites - before anything is
+    written.
     """
-    with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dst, 'w') as zout:
-        zout.comment = zin.comment
-        for info in zin.infolist():
-            out = zipfile.ZipInfo(info.filename, info.date_time)
-            out.external_attr = info.external_attr
-            out.create_system = info.create_system
-            out.comment = info.comment
-            if info.is_dir():
-                zout.writestr(out, b'')
-            elif info.filename == name:
-                zout.writestr(out, data)
-            else:
-                with zin.open(info) as fin, zout.open(out, 'w', force_zip64=info.file_size > 0x7fffffff) as fout:
-                    shutil.copyfileobj(fin, fout, 1 << 20)
+    with zipfile.ZipFile(path, 'a') as zf:
+        if before is not None:
+            zf.fp.seek(zf.start_dir)
+            before(zf.start_dir, zf.fp.read())
+        if name is None:
+            info = zipfile.ZipInfo('ComicInfo.xml', time.localtime()[:6])
+        else:
+            old = zf.getinfo(name)
+            zf.filelist = [i for i in zf.filelist if i.filename != name]
+            del zf.NameToInfo[name]
+            info = zipfile.ZipInfo(name, old.date_time)
+            info.external_attr = old.external_attr
+            info.create_system = old.create_system
+        info.compress_type = zipfile.ZIP_STORED
+        zf.writestr(info, data)
 
 def copyZipBook(src: str, dst: str, book_f: str) -> None:
     """Copy a zip book to dst so it finishes with a ComicInfo.xml holding page data.
-    A missing ComicInfo.xml is appended without rewriting the existing entries; an
-    incomplete one means rewriting the archive. When no correct page data can be
-    written the book is copied byte-for-byte. Built next to dst and renamed into
-    place so a partial file is never published.
+    The copy is patched (see patchZip), so its entries are never rewritten. When
+    no correct page data can be written the book is copied byte-for-byte. Built
+    next to dst and renamed into place so a partial file is never published.
     """
-    xml, name = zipPageData(src, book_f)
+    try:
+        xml, name = zipPageData(src, book_f)
+    except zipfile.BadZipFile:
+        logger.warning("Not writing page data for %s - not a valid zip.", book_f)
+        xml, name = None, None
     t_dst = "{}.part".format(dst)
     try:
-        if xml is None:
-            shutil.copy2(src, t_dst)
-        elif name is None:
-            logger.info("EVENT: appending page data to %s", book_f)
-            shutil.copy2(src, t_dst)
-            with zipfile.ZipFile(t_dst, 'a', compression=zipfile.ZIP_STORED) as zf:
-                zf.writestr('ComicInfo.xml', xml)
-            shutil.copystat(src, t_dst)
-        else:
-            logger.info("EVENT: rewriting %s with page data in %s", book_f, name)
+        shutil.copy2(src, t_dst)
+        if xml is not None:
+            logger.info("EVENT: writing page data to %s in %s", name or 'ComicInfo.xml', book_f)
             try:
-                rewriteZip(src, t_dst, name, xml)
-                shutil.copystat(src, t_dst)
+                patchZip(t_dst, name, xml)
             except Exception as e:  # pylint: disable=broad-except
-                # e.g. encrypted entries or a compression method zipfile cannot write
-                logger.warning("Not writing page data for %s - cannot rewrite archive.", book_f)
-                logger.debug("rewrite error: %s", e)
+                logger.warning("Not writing page data for %s - cannot patch archive.", book_f)
+                logger.debug("patch error: %s", e)
                 shutil.copy2(src, t_dst)
+            shutil.copystat(src, t_dst)
         os.replace(t_dst, dst)
     except BaseException:
         if os.path.isfile(t_dst):
@@ -396,16 +409,324 @@ def findComicInfo(paths, start):
         return None
     return min(found, key=lambda p: (os.path.relpath(p, start=start).count(os.sep), p))
 
+def packBook(tmp_x_dir: str, f_book_z: str, book_f: str) -> None:
+    """Pack the book extracted into tmp_x_dir as the .cbz f_book_z, with page data in its ComicInfo.xml."""
+    # Build the archive next to its final location so publishing it is an
+    # atomic rename instead of a second full-size copy out of a temp dir.
+    t_book_z = "{}.part".format(f_book_z)
+    logger.debug("        t_book_z: %s", t_book_z)
+    try:
+        with zipfile.ZipFile(t_book_z, 'w', compression=zipfile.ZIP_STORED) as zip:
+            pages = []
+            for xt_p, _, xt_fis in os.walk(tmp_x_dir):
+                for xt_fi in xt_fis:
+                    rel = os.path.relpath(os.path.join(xt_p, xt_fi), start=tmp_x_dir)
+                    rel = rel.replace(os.sep, '/')
+                    if filterPage(rel):
+                        continue
+                    # TBD: test for credit pages
+                    pages.append(os.path.join(xt_p, xt_fi))
+            pages.sort()
+            comicinfo = findComicInfo(pages, tmp_x_dir)
+            xml = None
+            if comicinfo is None:
+                logger.debug("no comicinfo.xml found - creating one")
+                comicinfo = os.path.join(tmp_x_dir, 'ComicInfo.xml')
+            else:
+                logger.debug("comicinfo exists.")
+                with open(comicinfo, 'rb') as f:
+                    xml = f.read()
+            entries = [fileEntry(os.path.relpath(p, start=tmp_x_dir).replace(os.sep, '/'), p) for p in pages]
+            try:
+                xml = updateComicInfo(xml, entries, book_f)
+            except ET.ParseError as e:
+                logger.warning("Cannot parse ComicInfo.xml in %s - leaving it unchanged.", book_f)
+                logger.debug("parse error: %s", e)
+                xml = None
+            except PageDataError as e:
+                logger.warning("Not writing page data for %s - %s.", book_f, e)
+                xml = None
+            if xml is not None:
+                logger.info("EVENT: writing page data to %s", os.path.relpath(comicinfo, start=tmp_x_dir))
+                with open(comicinfo, 'wb') as f:
+                    f.write(xml)
+                if comicinfo not in pages:
+                    pages.append(comicinfo)
+                    pages.sort()
+            logger.info("EVENT: making %s ", t_book_z)
+            for page in pages:
+                logger.debug("            page: %s", page)
+                page_f = os.path.relpath(page, start=tmp_x_dir).replace(os.sep, "/")
+                if filterPage(page_f):
+                    continue
+                logger.debug("          page_f: %s", page_f)
+                zip.write(page, page_f)
+        # The central directory is only written on close - publish after it.
+        logger.info("EVENT: publishing %s", f_book_z)
+        os.replace(t_book_z, f_book_z)
+    except BaseException:
+        if os.path.isfile(t_book_z):
+            os.unlink(t_book_z)
+        raise
+
+
+class JournalError(Exception):
+    """The journal cannot undo an interrupted patch - the run must stop."""
+
+def restoreTail(path: str, start: int, tail: bytes, atime_ns: int, mtime_ns: int) -> None:
+    """Undo a patch: put back the bytes from start on and drop anything after them."""
+    with open(path, 'r+b') as f:
+        f.seek(start)
+        f.write(tail)
+        f.truncate()
+        f.flush()
+        os.fsync(f.fileno())
+    os.utime(path, ns=(atime_ns, mtime_ns))
+
+class Journal:
+    """What an in-place run has finished, so a rerun skips those books unopened.
+    One JSON object per line. {"book": rel, "size", "mtime_ns", "outcome"} marks
+    a book done, and it is skipped while its size and mtime are unchanged. rel is
+    relative to the tree root with forward slashes, so the journal stays valid
+    when the tree is mounted elsewhere (e.g. a share and the NAS behind it).
+    {"patch": path, ...} is written just before a book is patched in place, once
+    the bytes the patch overwrites are saved beside the journal; if a run stops
+    before the next record, the next run puts them back.
+    """
+    def __init__(self, path: str, dryrun: bool):
+        self.path = path
+        self.tail_path = path + '.tail'
+        self.done = {}
+        self.f = None
+        pending = None
+        if os.path.isfile(path):
+            with open(path, encoding='utf-8') as f:
+                for line in f:
+                    try:
+                        rec = json.loads(line)
+                    except ValueError:
+                        continue  # a line cut short by a crash
+                    # books are processed one at a time, so any record settles the patch before it
+                    pending = rec if 'patch' in rec else None
+                    if 'book' in rec:
+                        self.done[rec['book']] = (rec['size'], rec['mtime_ns'])
+        if dryrun:
+            if pending is not None:
+                logger.warning("Would undo the interrupted patch of %s", pending['patch'])
+            return
+        if pending is not None:
+            self.undo(pending)
+        elif os.path.isfile(self.tail_path):
+            os.unlink(self.tail_path)
+        self.f = open(path, 'ab')
+        if self.f.tell():
+            with open(path, 'rb') as f:
+                f.seek(-1, os.SEEK_END)
+                if f.read(1) != b'\n':
+                    self.f.write(b'\n')  # end a line cut short by a crash
+
+    def undo(self, rec: dict) -> None:
+        """Put back what an interrupted patch overwrote."""
+        if not os.path.isfile(rec['patch']):
+            # a .zip renamed to .cbz once patched - the patch finished
+            logger.info("%s has moved since it was patched - nothing to undo", rec['patch'])
+            if os.path.isfile(self.tail_path):
+                os.unlink(self.tail_path)
+            return
+        try:
+            with open(self.tail_path, 'rb') as f:
+                tail = f.read()
+        except OSError:
+            tail = None
+        if tail is None or len(tail) != rec['tail']:
+            raise JournalError("cannot undo the interrupted patch of {}: {} is missing or damaged".format(
+                rec['patch'], self.tail_path))
+        logger.warning("EVENT: undoing the interrupted patch of %s", rec['patch'])
+        restoreTail(rec['patch'], rec['offset'], tail, rec['atime_ns'], rec['mtime_ns'])
+        os.unlink(self.tail_path)
+
+    def write(self, rec: dict) -> None:
+        if self.f is None:
+            return
+        self.f.write(json.dumps(rec).encode('utf-8') + b'\n')
+        self.f.flush()
+        os.fsync(self.f.fileno())
+
+    def isDone(self, rel: str, path: str) -> bool:
+        """Return True if the book at path was finished and has not changed since."""
+        if rel not in self.done:
+            return False
+        st = os.stat(path)
+        return self.done[rel] == (st.st_size, st.st_mtime_ns)
+
+    def record(self, rel: str, path: str, outcome: str) -> None:
+        """Mark the book now at path finished."""
+        if self.f is None:
+            return
+        st = os.stat(path)
+        self.write({'book': rel, 'size': st.st_size, 'mtime_ns': st.st_mtime_ns, 'outcome': outcome})
+        self.done[rel] = (st.st_size, st.st_mtime_ns)
+        if os.path.isfile(self.tail_path):
+            os.unlink(self.tail_path)  # the patch it saved is settled
+
+    def beginPatch(self, path: str, start: int, tail: bytes, st) -> None:
+        """Durably save what a patch of path is about to overwrite."""
+        if self.f is None:
+            return
+        with open(self.tail_path, 'wb') as f:
+            f.write(tail)
+            f.flush()
+            os.fsync(f.fileno())
+        self.write({'patch': path, 'offset': start, 'tail': len(tail),
+                    'atime_ns': st.st_atime_ns, 'mtime_ns': st.st_mtime_ns})
+
+    def close(self) -> None:
+        if self.f is not None:
+            self.f.close()
+            self.f = None
+
+def patchInPlace(book: str, name, xml: bytes, journal, book_f: str) -> None:
+    """Patch page data into the zip book where it lies (see patchZip), keeping its mtime.
+    What the patch overwrites is kept in the journal until the book is recorded,
+    so a crash is undone by the next run, and in memory, so a patch that fails
+    is undone at once.
+    """
+    st = os.stat(book)
+    saved = []
+    def before(start, tail):
+        saved.append((start, tail))
+        if journal is not None:
+            journal.beginPatch(book, start, tail, st)
+    logger.info("EVENT: writing page data to %s in %s", name or 'ComicInfo.xml', book_f)
+    try:
+        patchZip(book, name, xml, before)
+        with open(book, 'rb+') as f:
+            os.fsync(f.fileno())
+        os.utime(book, ns=(st.st_atime_ns, st.st_mtime_ns))
+    except BaseException:
+        if saved:
+            logger.warning("EVENT: undoing the failed patch of %s", book_f)
+            restoreTail(book, saved[0][0], saved[0][1], st.st_atime_ns, st.st_mtime_ns)
+            if journal is not None:
+                journal.write({'undone': book})
+        raise
+
+def sniffArchive(book: str):
+    """Return the archive type book really is ('.cbz', '.cbr' or '.cb7'), whatever its name, or None."""
+    try:
+        if rarfile.is_rarfile(book):
+            return '.cbr'
+        if py7zr.is_7zfile(book):
+            return '.cb7'
+        if zipfile.is_zipfile(book):
+            return '.cbz'
+    except OSError:
+        pass
+    return None
+
+def findLibraryRoot(start: str):
+    """Return the library root: start or the nearest folder above it that has a
+    TRASH_DIR. None if there is none.
+    """
+    d = os.path.abspath(start)
+    while True:
+        if os.path.isdir(os.path.join(d, TRASH_DIR)):
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:
+            return None
+        d = parent
+
+def trashBook(book: str, trash_dir: str, book_f: str, dryrun: bool) -> str:
+    """Move an unreadable book into trash_dir, never overwriting what is already there."""
+    base, ext = os.path.splitext(os.path.join(trash_dir, os.path.basename(book)))
+    target, n = base + ext, 1
+    while os.path.exists(target):
+        target, n = "{} ({}){}".format(base, n, ext), n + 1
+    logger.warning("Moving unreadable %s to %s", book_f, target)
+    if not dryrun:
+        os.makedirs(trash_dir, exist_ok=True)
+        shutil.move(book, target)
+    return 'trashed'
+
+def claimTarget(book: str, target: str, book_f: str, replace: bool) -> bool:
+    """Return True if book may be written to target, its new name in the tree."""
+    if os.path.normcase(book) == os.path.normcase(target) or not os.path.exists(target):
+        return True
+    if replace:
+        logger.info("EVENT: %s already exists - replacing...", target)
+        return True
+    logger.warning("Leaving %s alone - %s already exists (use --replace to overwrite).", book_f, target)
+    return False
+
+def inPlaceBook(book: str, book_t: str, trash_dir: str, replace: bool, dryrun: bool, journal=None) -> tuple:
+    """Process book where it lies: it finishes as a .cbz with page data, and an
+    unreadable book is moved to trash_dir. Returns (outcome, path): what
+    happened - 'current', 'unverified' (page data cannot safely be written),
+    'updated', 'converted', 'trashed', 'kept' or 'skipped' - and where the book
+    now is (None if it left the tree or should be looked at again by the next run).
+    """
+    book_d, book_f = os.path.split(book)
+    if book_t not in ['.cbz', '.zip'] + REPACK_TYPES:
+        return 'current', book
+    real_t = sniffArchive(book)
+    if real_t is None:
+        return trashBook(book, trash_dir, book_f, dryrun), None
+    f_book_z = os.path.join(book_d, os.path.splitext(book_f)[0] + '.cbz')
+
+    if real_t == '.cbz':
+        try:
+            xml, name = zipPageData(book, book_f)
+        except zipfile.BadZipFile:
+            return trashBook(book, trash_dir, book_f, dryrun), None
+        renamed = os.path.normcase(book) != os.path.normcase(f_book_z)
+        if xml is None and not renamed:
+            # no xml and no ComicInfo.xml means page data could not be worked out (warned)
+            return ('current' if name else 'unverified'), book
+        if not claimTarget(book, f_book_z, book_f, replace):
+            return 'skipped', None
+        if dryrun:
+            logger.info("EVENT: would update %s as %s", book_f, f_book_z)
+            return 'updated', None
+        if xml is not None:
+            patchInPlace(book, name, xml, journal, book_f)
+        if renamed:
+            logger.info("EVENT: renaming %s to %s", book_f, f_book_z)
+            os.replace(book, f_book_z)
+        return 'updated', f_book_z
+
+    if not claimTarget(book, f_book_z, book_f, replace):
+        return 'skipped', None
+    if dryrun:
+        logger.info("EVENT: would extract %s and replace it with %s", book_f, f_book_z)
+        return 'converted', None
+    with tempfile.TemporaryDirectory() as tmp_x_dir:
+        status = extractBook(book, real_t, tmp_x_dir, book_f)
+        if status == 'bad':
+            return trashBook(book, trash_dir, book_f, dryrun), None
+        if status == 'keep':
+            # encrypted or unsupported compression - readable by other tools, so left as it is
+            return 'kept', book
+        if status == 'zip':
+            return inPlaceBook(book, '.cbz', trash_dir, replace, dryrun, journal)
+        packBook(tmp_x_dir, f_book_z, book_f)
+    if os.path.normcase(book) != os.path.normcase(f_book_z):
+        # a .cbz that was really a RAR/7z has just been replaced by its conversion
+        os.unlink(book)
+    return 'converted', f_book_z
 
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
 @click.version_option(version=f"v{get_version()}", prog_name="cbrXz")
 @click.argument('src', type=click.Path(exists=True, dir_okay=True, file_okay=True, path_type=str))
-@click.argument('dst', type=click.Path(dir_okay=True, file_okay=True, path_type=str))
+@click.argument('dst', required=False, type=click.Path(dir_okay=True, file_okay=True, path_type=str))
 @click.option('--root', required=False, type=click.Path(exists=True, dir_okay=True, file_okay=True, path_type=str), help='Override root for relative paths')
 @click.option('-F', '--replace', is_flag=True, help='Overwrite existing destination files')
 @click.option('-N', '--dry-run', 'dryrun', is_flag=True, help='Plan actions but do not write outputs')
+@click.option('-i', '--in-place', 'in_place', is_flag=True, help='Process SRC where it lies instead of writing to DST')
+@click.option('--trash', required=False, type=click.Path(file_okay=False, path_type=str), help='Where --in-place moves unreadable books (default: Sys/DeleteQ in SRC or the nearest folder above it)')
+@click.option('--journal', 'journal_path', required=False, type=click.Path(dir_okay=False, path_type=str), help='Record of books --in-place has finished, so a rerun skips them (default: Sys/cbrXz_journal.jsonl beside Sys/DeleteQ)')
 @click.option('--log-level', default='INFO', type=click.Choice(['CRITICAL','ERROR','WARNING','INFO','DEBUG','NOTSET'], case_sensitive=False), help='Logging verbosity')
-def main(src, dst, root, replace, dryrun, log_level):
+def main(src, dst, root, replace, dryrun, in_place, trash, journal_path, log_level):
     # cfg = {}
     total = 0
     books = []
@@ -419,17 +740,39 @@ def main(src, dst, root, replace, dryrun, log_level):
     )
 
     source = os.path.abspath(src)
-    destination = os.path.abspath(dst)
 
     # early input validation (no logging)
     if not (os.path.isdir(source) or os.path.isfile(source)):
         raise click.UsageError(f"Source must be a file or directory: {source}")
-    if os.path.isfile(destination):
-        raise click.UsageError(f"Destination must be a directory (not a file): {destination}")
-    try:
-        os.makedirs(destination, exist_ok=True)
-    except Exception as e:  # pylint: disable=broad-except
-        raise click.ClickException(f"Cannot create destination directory: {destination} ({e})")
+    if in_place:
+        if dst is not None:
+            raise click.UsageError("DST cannot be given with --in-place")
+        destination = None
+    else:
+        if dst is None:
+            raise click.UsageError("Missing argument 'DST' (or use --in-place)")
+        if trash is not None or journal_path is not None:
+            raise click.UsageError("--trash and --journal are only used with --in-place")
+        destination = os.path.abspath(dst)
+        if os.path.isfile(destination):
+            raise click.UsageError(f"Destination must be a directory (not a file): {destination}")
+        try:
+            os.makedirs(destination, exist_ok=True)
+        except Exception as e:  # pylint: disable=broad-except
+            raise click.ClickException(f"Cannot create destination directory: {destination} ({e})")
+    if in_place:
+        tree = source if os.path.isdir(source) else os.path.dirname(source)
+        lib_root = findLibraryRoot(tree)
+        if lib_root is None and (trash is None or journal_path is None):
+            raise click.UsageError(f"no {TRASH_DIR} folder in {tree} or above it - create one or give --trash and --journal")
+        if trash is None:
+            trash, trash_base = os.path.join(lib_root, TRASH_DIR), lib_root
+        else:
+            trash, trash_base = os.path.abspath(trash), None
+        journal_path = os.path.abspath(journal_path or os.path.join(lib_root, SYS_DIR, JOURNAL_NAME))
+        # journal keys are relative to the library root, so runs started from any
+        # folder in it - or on another machine - share one journal
+        journal_base = lib_root or tree
 
     logger.debug("source: %s", source)
     logger.debug("destination: %s", destination)
@@ -440,7 +783,9 @@ def main(src, dst, root, replace, dryrun, log_level):
         total = 1
         book_count = 1
     else:
-        for path, _, files in os.walk(source):
+        for path, dirs, files in os.walk(source):
+            # never pick up books already moved to the trash
+            dirs[:] = [d for d in dirs if trash is None or os.path.normcase(os.path.join(path, d)) != os.path.normcase(trash)]
             for f in files:
                 total += 1
 
@@ -472,6 +817,17 @@ def main(src, dst, root, replace, dryrun, log_level):
 
     # Determine base for relative paths (handles file vs dir sources)
     rel_base = source if os.path.isdir(source) else os.path.dirname(source)
+    if in_place:
+        # trashed books keep their path below the library root (the folder holding
+        # Sys/DeleteQ), e.g. H:\Library\X\b.cbz -> H:\Sys\DeleteQ\Library\X\b.cbz and
+        # /volume1/comics/Library/X/b.cbz -> /volume1/comics/Sys/DeleteQ/Library/X/b.cbz.
+        # A --trash elsewhere uses the folder it shares with the tree.
+        if trash_base is None:
+            try:
+                trash_base = os.path.commonpath([trash, rel_base])
+            except ValueError:
+                trash_base = rel_base  # different drives
+        logger.info("trash: %s", trash)
 
     logger.info("beginning - %d books of %d files.", book_count, total)
     logger.debug("----")
@@ -479,7 +835,21 @@ def main(src, dst, root, replace, dryrun, log_level):
     # exit()
 
     books.sort()
+    outcomes = {}
+    journal = None
+    if in_place:
+        try:
+            journal = Journal(journal_path, dryrun)
+        except JournalError as e:
+            raise click.ClickException(str(e))
+        logger.info("journal: %s (%d books recorded)", journal_path, len(journal.done))
     for book in books:
+        if in_place:
+            rel = os.path.relpath(book, start=journal_base).replace(os.sep, '/')
+            if journal.isDone(rel, book):
+                logger.debug("unchanged since recorded - skipping %s", book)
+                outcomes['journaled'] = outcomes.get('journaled', 0) + 1
+                continue
         logger.info("EVENT: processing %s", book)
         logger.debug("            book: %s", book)
         t_book = os.path.relpath(book, start=rel_base)
@@ -491,6 +861,21 @@ def main(src, dst, root, replace, dryrun, log_level):
         logger.debug("          book_b: %s", book_b)
         book_t = book_t.lower()
         logger.debug("          book_t: %s", book_t)
+        if in_place:
+            try:
+                outcome, now = inPlaceBook(book, book_t, os.path.join(trash, os.path.relpath(os.path.dirname(book), start=trash_base)), replace, dryrun, journal)
+                if now is not None and not dryrun:
+                    journal.record(os.path.relpath(now, start=journal_base).replace(os.sep, '/'), now, outcome)
+            except JournalError:
+                raise
+            except Exception as e:  # pylint: disable=broad-except
+                # one bad book must not end a run over the whole collection
+                logger.error("ERROR: cannot process %s - %s", book, e)
+                logger.debug("error", exc_info=True)
+                outcome = 'failed'
+            outcomes[outcome] = outcomes.get(outcome, 0) + 1
+            logger.debug("----")
+            continue
         book_destination = os.path.join(destination, book_p)
         logger.debug("book_destination: %s", book_destination)
 
@@ -525,63 +910,7 @@ def main(src, dst, root, replace, dryrun, log_level):
                         logger.debug("----")
                         continue
 
-                    # Build the archive next to its final location so publishing it is an
-                    # atomic rename instead of a second full-size copy out of a temp dir.
-                    t_book_z = "{}.part".format(f_book_z)
-                    logger.debug("        t_book_z: %s", t_book_z)
-                    try:
-                        with zipfile.ZipFile(t_book_z, 'w', compression=zipfile.ZIP_STORED) as zip:
-                            pages = []
-                            for xt_p, _, xt_fis in os.walk(tmp_x_dir):
-                                for xt_fi in xt_fis:
-                                    rel = os.path.relpath(os.path.join(xt_p, xt_fi), start=tmp_x_dir)
-                                    rel = rel.replace(os.sep, '/')
-                                    if filterPage(rel):
-                                        continue
-                                    # TBD: test for credit pages
-                                    pages.append(os.path.join(xt_p, xt_fi))
-                            pages.sort()
-                            comicinfo = findComicInfo(pages, tmp_x_dir)
-                            xml = None
-                            if comicinfo is None:
-                                logger.debug("no comicinfo.xml found - creating one")
-                                comicinfo = os.path.join(tmp_x_dir, 'ComicInfo.xml')
-                            else:
-                                logger.debug("comicinfo exists.")
-                                with open(comicinfo, 'rb') as f:
-                                    xml = f.read()
-                            entries = [fileEntry(os.path.relpath(p, start=tmp_x_dir).replace(os.sep, '/'), p) for p in pages]
-                            try:
-                                xml = updateComicInfo(xml, entries, book_f)
-                            except ET.ParseError as e:
-                                logger.warning("Cannot parse ComicInfo.xml in %s - leaving it unchanged.", book_f)
-                                logger.debug("parse error: %s", e)
-                                xml = None
-                            except PageDataError as e:
-                                logger.warning("Not writing page data for %s - %s.", book_f, e)
-                                xml = None
-                            if xml is not None:
-                                logger.info("EVENT: writing page data to %s", os.path.relpath(comicinfo, start=tmp_x_dir))
-                                with open(comicinfo, 'wb') as f:
-                                    f.write(xml)
-                                if comicinfo not in pages:
-                                    pages.append(comicinfo)
-                                    pages.sort()
-                            logger.info("EVENT: making %s ", t_book_z)
-                            for page in pages:
-                                logger.debug("            page: %s", page)
-                                page_f = os.path.relpath(page, start=tmp_x_dir).replace(os.sep, "/")
-                                if filterPage(page_f):
-                                    continue
-                                logger.debug("          page_f: %s", page_f)
-                                zip.write(page, page_f)
-                        # The central directory is only written on close - publish after it.
-                        logger.info("EVENT: copying %s to %s", book_z, book_destination)
-                        os.replace(t_book_z, f_book_z)
-                    except BaseException:
-                        if os.path.isfile(t_book_z):
-                            os.unlink(t_book_z)
-                        raise
+                    packBook(tmp_x_dir, f_book_z, book_f)
         else:
             # Determine destination filename: rename .zip -> .cbz
             if book_t == '.zip':
@@ -605,6 +934,12 @@ def main(src, dst, root, replace, dryrun, log_level):
         logger.debug("----")
 
     logger.info("completed - %d books of %d files.", book_count, total)
+    if in_place:
+        journal.close()
+        logger.info("in place: %s", ", ".join(f"{n} {k}" for k, n in sorted(outcomes.items())) or "nothing to do")
+        if outcomes.get('failed'):
+            logger.error("%d books could not be processed - see the errors above.", outcomes['failed'])
+            raise SystemExit(1)
     logger.info("exiting - success.")
 
 #####

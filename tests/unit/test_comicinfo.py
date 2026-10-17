@@ -223,7 +223,7 @@ def test_copy_appends_comicinfo_to_zip_without_one(tmp_path):
 
 
 @pytest.mark.parametrize('compression', [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED])
-def test_copy_rewrites_zip_with_incomplete_comicinfo(tmp_path, compression):
+def test_copy_patches_zip_with_incomplete_comicinfo(tmp_path, compression):
     z = tmp_path / 'book.cbz'
     with zipfile.ZipFile(z, 'w', compression=compression) as zf:
         zf.write(make_png(tmp_path / 'p00.png'), 'p00.png')
@@ -235,17 +235,38 @@ def test_copy_rewrites_zip_with_incomplete_comicinfo(tmp_path, compression):
     with zipfile.ZipFile(z) as zin, zipfile.ZipFile(out) as zout:
         assert zout.testzip() is None
         assert zout.comment == b'kept'
-        assert zout.namelist() == zin.namelist()
-        for a, b in zip(zin.infolist(), zout.infolist()):
-            assert a.date_time == b.date_time
-            assert b.compress_type == zipfile.ZIP_STORED
+        assert sorted(zout.namelist()) == sorted(zin.namelist())
+        assert zout.getinfo('sub/ComicInfo.xml').date_time == zin.getinfo('sub/ComicInfo.xml').date_time
+        # pages were not rewritten: same place, same compression, same bytes
+        for a in zin.infolist():
             if a.filename != 'sub/ComicInfo.xml':
+                b = zout.getinfo(a.filename)
+                assert (b.header_offset, b.compress_type, b.CRC) == (a.header_offset, a.compress_type, a.CRC)
                 assert zout.read(b) == zin.read(a)
         root, els = pages_of(zout.read('sub/ComicInfo.xml'))
     assert root.findtext('Title') == 'T'
     assert root.findtext('PageCount') == '2'
     assert len(els) == 2
     assert out.stat().st_mtime == z.stat().st_mtime
+
+
+def test_patch_hands_over_what_it_overwrites(tmp_path):
+    z = tmp_path / 'book.cbz'
+    with zipfile.ZipFile(z, 'w') as zf:
+        zf.write(make_png(tmp_path / 'p00.png'), 'p00.png')
+        zf.writestr('ComicInfo.xml', '<ComicInfo/>')
+    original = z.read_bytes()
+    seen = []
+    cbrXz.patchZip(str(z), 'ComicInfo.xml', b'<ComicInfo><Title>new</Title></ComicInfo>',
+                   lambda start, tail: seen.append((start, tail)))
+    (start, tail), = seen
+    assert original[start:] == tail
+    assert z.read_bytes()[:start] == original[:start]
+    with zipfile.ZipFile(z) as zf:
+        assert zf.namelist() == ['p00.png', 'ComicInfo.xml']
+        assert zf.read('ComicInfo.xml') == b'<ComicInfo><Title>new</Title></ComicInfo>'
+    cbrXz.restoreTail(str(z), start, tail, 0, 0)
+    assert z.read_bytes() == original
 
 
 def test_copy_leaves_zip_with_complete_comicinfo_alone(tmp_path):
