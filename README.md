@@ -34,10 +34,17 @@ winget install RARLab.WinRAR
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+```
 
-Debian/Ubuntu:     sudo apt-get update && sudo apt-get install unrar || sudo apt-get install libarchive-tools
-Fedora/RHEL:       sudo dnf install unrar || sudo dnf install bsdtar
-macOS (Homebrew):  brew install unrar || brew install libarchive
+Then install a RAR extractor:
+
+```bash
+# Debian/Ubuntu
+sudo apt-get install unrar        # or: libarchive-tools
+# Fedora/RHEL
+sudo dnf install unrar            # or: bsdtar
+# macOS (Homebrew)
+brew install unrar                # or: libarchive
 ```
 
 ## Usage
@@ -151,23 +158,6 @@ Run all tests:
 ```pwsh
 pytest -q
 ```
-
-## Enforcing Conventional Commits
-
-Commit messages drive the release: `semantic-release` parses them to pick the
-next version, so the format is enforced in CI.
-
-- Commitlint (commit messages, on push and PR): `.github/workflows/commitlint.yml`
-- Tests and release: `.github/workflows/ci.yml`
-
-Merge commits are ignored by commitlint's defaults.
-
-Conventional Commit examples:
-
-- `feat(reader): add natural sort of pages`
-- `fix(zip): skip __MACOSX and Thumbs.db`
-- `docs(readme): add install notes`
-- Breaking: `feat!: change default compression to stored`
 
 ## License and Warranty
 
