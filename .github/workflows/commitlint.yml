@@ -1,8 +1,8 @@
 name: Commitlint
 
-# This repo releases straight from pushes to master, and semantic-release
-# parses those commit messages. Linting only on pull_request meant the release
-# pipeline's only input was never validated.
+# semantic-release reads the commit messages on master to choose the next
+# version and write the changelog. PRs are squash-merged with the PR title as
+# the subject, so lint pushes to master as well as the PR's own commits.
 on:
   push:
     branches: [ master ]
