@@ -18,10 +18,18 @@ The RAR tests need an extractor on PATH: UnRAR, bsdtar/libarchive, or 7-Zip. CI 
 
 ## Commit messages and releases
 
-Every push to `master` runs `python-semantic-release`. It reads the commit messages since the last tag to choose the next version, writes `CHANGELOG.md`, tags `vX.Y.Z` and creates the GitHub release. Commitlint (`@commitlint/config-conventional`) checks messages on PRs and on pushes to `master`.
+`master` is protected: changes land through squash-merged PRs that pass CI, and the PR title becomes the commit subject on `master`. Commitlint (`@commitlint/config-conventional`) checks PR commits and pushes to `master`.
+
+Merging never releases anything. `python-semantic-release` reads the commit subjects on `master` since the last tag to choose the next version and write `CHANGELOG.md`, but only when a release is prepared on purpose:
+
+1. On an up-to-date `master` checkout, run `semantic-release version --no-commit --no-tag --no-push --no-vcs-release` (pinned `python-semantic-release==10.6.2`). It updates `project.version` in `pyproject.toml` and `CHANGELOG.md` without committing.
+2. Move those changes to a branch and open a PR titled `chore(release): X.Y.Z`. Squash-merge it once CI passes.
+3. Run the **Release** workflow on `master` with version `vX.Y.Z`. It checks the version, changelog and history, retests that exact commit, then tags it and publishes the GitHub release with that version's changelog section.
+
+`v*` tags can't be moved or deleted once published.
 
 - Subject: `type(scope): summary`, e.g. `fix(zip): skip __MACOSX entries`. Scopes in use include `cli`, `zip`, `comicinfo`, `inplace` and `readme`.
-- `feat` gives a minor bump. `fix` and `perf` give a patch bump. `docs`, `test`, `refactor`, `ci`, `chore` and `build` don't release anything.
+- `feat` gives a minor bump. `fix` and `perf` give a patch bump. `docs`, `test`, `refactor`, `ci`, `chore` and `build` don't bump the version.
 - A breaking change (`feat!:` or a `BREAKING CHANGE:` footer) gives a major bump.
-- PRs are merged with merge commits, so each commit on the branch ends up in the changelog. Write each one as a changelog line.
-- Don't edit `project.version` in `pyproject.toml` or `CHANGELOG.md` by hand. The release job writes both, then commits them as a bare `X.Y.Z` subject with `[skip ci]`.
+- PRs are squash-merged, so the PR title is the changelog line. Write it as one; keep one change per PR.
+- Don't edit `project.version` in `pyproject.toml` or `CHANGELOG.md` by hand. Let `semantic-release` write both in the release PR.

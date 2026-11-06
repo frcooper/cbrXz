@@ -1,0 +1,99 @@
+name: Release
+run-name: Release ${{ inputs.version }}
+
+# Releases are deliberate. Merging to master never releases anything. To ship:
+#   1. Prepare a release PR (see AGENTS.md) that sets project.version and
+#      CHANGELOG.md, and squash-merge it once CI passes.
+#   2. Run this workflow on master with the same version.
+# It retests the exact commit, then tags it and publishes the GitHub release.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, matching project.version (for example, v1.6.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate version, changelog and history
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo 'Use a stable version such as v1.6.0, without leading zeroes.' >&2
+            exit 1
+          fi
+          if git show-ref --verify --quiet "refs/tags/$VERSION"; then
+            echo "Tag $VERSION already exists; published versions must never move." >&2
+            exit 1
+          fi
+          declared=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')
+          if [[ "v$declared" != "$VERSION" ]]; then
+            echo "pyproject.toml declares $declared; merge the release PR for $VERSION first." >&2
+            exit 1
+          fi
+          if ! grep -q "^## $VERSION " CHANGELOG.md; then
+            echo "CHANGELOG.md has no '## $VERSION' section." >&2
+            exit 1
+          fi
+          previous=$(gh release list --limit 1 --exclude-drafts --exclude-pre-releases \
+            --json tagName --jq '.[0].tagName // empty')
+          if [[ -n "$previous" ]]; then
+            newest=$(printf '%s\n' "$previous" "$VERSION" | sort -V | tail -n 1)
+            if [[ "$newest" != "$VERSION" ]]; then
+              echo "Version must be newer than $previous." >&2
+              exit 1
+            fi
+            git merge-base --is-ancestor "$previous" "$GITHUB_SHA"
+          fi
+
+  validate:
+    needs: prepare
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Tag and publish the tested commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # This version's CHANGELOG section, without its heading, is the release body.
+          awk -v v="## $VERSION " 'index($0, v) == 1 {on=1; next} on && /^## v/ {exit} on' \
+            CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          # Explicit creation fails if another actor created this tag while CI ran.
+          gh api --method POST "repos/$GH_REPO/git/refs" \
+            -f "ref=refs/tags/$VERSION" -f "sha=$GITHUB_SHA"
+          gh release create "$VERSION" --verify-tag --title "$VERSION" \
+            --notes-file "$RUNNER_TEMP/notes.md"
